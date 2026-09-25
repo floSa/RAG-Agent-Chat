@@ -3,7 +3,7 @@ import re
 from functools import lru_cache
 from urllib.parse import urlparse
 
-from minio import Minio
+from minio import Minio as ClientS3
 
 from src.agent.settings import settings
 
@@ -15,28 +15,28 @@ _OBJECT_NAME_RE = re.compile(r"^[\w\-./]+$")
 
 def reset_connection() -> None:
     """Oublie le client mis en cache, pour le recréer au prochain appel."""
-    _get_minio_client.cache_clear()
+    _get_client_s3.cache_clear()
 
 
 @lru_cache(maxsize=1)
-def _get_minio_client() -> Minio:
-    client = Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_root_user,
-        secret_key=settings.minio_root_password,
-        secure=settings.minio_secure,
+def _get_client_s3() -> ClientS3:
+    client = ClientS3(
+        settings.s3_endpoint,
+        access_key=settings.s3_access_key,
+        secret_key=settings.s3_secret_key,
+        secure=settings.s3_secure,
     )
-    logger.info("MinIO connecté : %s", settings.minio_endpoint)
+    logger.info("Stockage objet connecté : %s", settings.s3_endpoint)
     return client
 
 
-def object_name_from_url(minio_url: str) -> str | None:
-    """Extrait le chemin objet d'une URL MinIO interne.
+def object_name_from_url(media_url: str) -> str | None:
+    """Extrait le chemin objet d'une URL interne du stockage objet.
 
-    minio_url est au format http://seaweedfs:8333/documents/images/{stem}/{id}_{type}.png
+    media_url est au format http://seaweedfs:8333/documents/images/{stem}/{id}_{type}.png
     On retire le host et le premier segment du path (nom du bucket).
     """
-    parsed = urlparse(minio_url)
+    parsed = urlparse(media_url)
     path_parts = parsed.path.lstrip("/").split("/", 1)
     if len(path_parts) < 2:  # noqa: PLR2004
         return None
@@ -49,9 +49,8 @@ def cle_objet(object_key: str | None, url: str | None) -> str | None:
     `object_key` est la propriété que le pipeline publie depuis la bascule de
     son stockage objet — §4.82 de `documentation/axes_amelioration.md`. Elle
     porte la clé NUE, et nous affranchit du décodage positionnel de l'URL, que
-    le §4.62 a mesuré faux sur une URL en virtual-host style. Tant que les
-    stores servis n'ont pas été réingérés, elle manque : la clé est alors
-    déduite de l'URL, par la même règle qu'avant.
+    le §4.62 a mesuré faux sur une URL en virtual-host style. Quand elle
+    manque, la clé est déduite de l'URL, par la même règle qu'avant.
     """
     if object_key:
         return object_key
@@ -60,17 +59,17 @@ def cle_objet(object_key: str | None, url: str | None) -> str | None:
     return None
 
 
-def to_media_path(minio_url: str, object_key: str | None = None) -> str:
-    """Convertit une URL MinIO interne en chemin proxy /media servi par l'API.
+def to_media_path(media_url: str, object_key: str | None = None) -> str:
+    """Convertit une URL interne du stockage objet en chemin proxy /media servi par l'API.
 
     Les URLs (même pré-signées) construites sur l'endpoint interne seaweedfs:8333
     sont inaccessibles depuis le navigateur de l'utilisateur : c'est l'API
     FastAPI qui sert les objets via GET /media/{object_name}. La clé est
     `object_key` quand la source l'a publié — `cle_objet`.
     """
-    object_name = cle_objet(object_key, minio_url)
+    object_name = cle_objet(object_key, media_url)
     if object_name is None:
-        return minio_url  # URL non reconnue, retournée telle quelle
+        return media_url  # URL non reconnue, retournée telle quelle
     return f"/media/{object_name}"
 
 
@@ -135,30 +134,30 @@ def is_allowed(object_name: str) -> bool:
 def get_object_bytes(object_name: str) -> bytes | None:
     """Télécharge un objet du bucket. Retourne None si invalide ou introuvable."""
     if ".." in object_name or not _OBJECT_NAME_RE.fullmatch(object_name):
-        logger.warning("Chemin d'objet MinIO rejeté : %s", object_name[:120])
+        logger.warning("Chemin d'objet rejeté : %s", object_name[:120])
         return None
 
     if settings.restrict_media_to_graph and not is_allowed(object_name):
-        logger.warning("Objet MinIO non référencé par le graphe : %s", object_name[:120])
+        logger.warning("Objet non référencé par le graphe : %s", object_name[:120])
         return None
 
     for attempt in (1, 2):
         response = None
         try:
-            response = _get_minio_client().get_object(settings.minio_bucket, object_name)
+            response = _get_client_s3().get_object(settings.s3_bucket, object_name)
             return response.read()
         except Exception:
-            # Le client est mis en cache : si MinIO a redémarré, il pointe vers
+            # Le client est mis en cache : si le stockage objet a redémarré, il pointe vers
             # une connexion morte. On le recrée et on retente une fois avant
             # de conclure que l'objet est introuvable.
-            # Absorption LARGE parce que le SDK minio mêle ses `S3Error` aux
+            # Absorption LARGE parce que le SDK S3 mêle ses `S3Error` aux
             # erreurs urllib3 d'un socket mort, sans ancêtre commun. Jamais
             # muette : WARNING au premier essai, pile complète au second.
             if attempt == 1:
-                logger.warning("MinIO injoignable, recréation du client et nouvel essai.")
+                logger.warning("Stockage objet injoignable, recréation du client et nouvel essai.")
                 reset_connection()
                 continue
-            logger.exception("Objet MinIO introuvable : %s", object_name)
+            logger.exception("Objet introuvable dans le stockage objet : %s", object_name)
             return None
         finally:
             if response is not None:

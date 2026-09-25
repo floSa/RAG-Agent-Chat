@@ -32,7 +32,7 @@ from src.api.schemas import ChunkResult, Message, SectionContext, SectionElement
 
 # ─── Outillage ────────────────────────────────────────────────────────────────
 
-MINIO_URL = "http://minio:9000/documents/images/livre/1111111111_picture.png"
+MEDIA_URL = "http://stockage-fictif:9000/documents/images/livre/1111111111_picture.png"
 
 
 def _element(node_id: str, **kwargs) -> SectionElement:
@@ -221,7 +221,7 @@ def test_une_illustration_d_une_section_ecartee_n_est_plus_affichee() -> None:
         "ssssssssbb",
         [
             _element("bbbbbbbbbb"),
-            _element("1111111111", label="picture", minio_url=MINIO_URL),
+            _element("1111111111", label="picture", media_url=MEDIA_URL),
         ],
     )
     state = {
@@ -250,7 +250,7 @@ def test_une_illustration_dont_le_marqueur_est_coupe_reste_affichee() -> None:
     La voie 1 reste au grain de l'élément : un `[img:ID]` que le modèle émet est
     une affirmation sur ce qu'il a vu, et elle est vérifiée comme telle.
     """
-    figure = _element("1111111111", label="picture", minio_url=MINIO_URL)
+    figure = _element("1111111111", label="picture", media_url=MEDIA_URL)
     citee = _section("ssssssssaa", [_element("aaaaaaaaaa"), figure])
     # Le markdown soumis s'arrête après le premier élément : le marqueur de la
     # figure est parti à la coupe.
@@ -278,7 +278,7 @@ def test_un_marqueur_image_emis_par_le_modele_sur_un_element_coupe_est_refuse() 
     du modèle sur ce qu'il a vu — et elle est fausse. La section n'étant pas citée
     ici, la voie 2 ne la rattrape pas.
     """
-    figure = _element("1111111111", label="picture", minio_url=MINIO_URL)
+    figure = _element("1111111111", label="picture", media_url=MEDIA_URL)
     soumise = _section("ssssssssaa", [_element("aaaaaaaaaa"), figure])
     tronquee = soumise.model_copy(
         update={"markdown": f"{soumise.elements[0].text} [src:aaaaaaaaaa]"}
@@ -303,7 +303,7 @@ def test_la_borne_des_illustrations_reste_appliquee(monkeypatch) -> None:
 
     monkeypatch.setattr(graph_module.settings, "max_images", 2)
     figures = [
-        _element(f"{i}" * 10, label="picture", minio_url=MINIO_URL) for i in range(1, 6)
+        _element(f"{i}" * 10, label="picture", media_url=MEDIA_URL) for i in range(1, 6)
     ]
     soumise = _section("ssssssssaa", [_element("aaaaaaaaaa"), *figures])
     state = {

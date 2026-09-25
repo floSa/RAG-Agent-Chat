@@ -382,7 +382,7 @@ elif st.session_state.phase == "answer":
         cols = st.columns(min(len(st.session_state.images), 3))
         for i, img in enumerate(st.session_state.images):
             with cols[i % 3]:
-                url = img["minio_url"]
+                url = img["media_url"]
                 caption = f"[img:{img['element_id']}]"
                 try:
                     if url.startswith("/"):

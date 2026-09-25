@@ -1,19 +1,19 @@
-"""LOT-42 — `media_url` et `object_key`, avec repli sur `minio_url`, aux cinq sites.
+"""LOT-42 puis LOT-43 — `media_url` et `object_key`, et eux seuls, aux cinq sites.
 
 POURQUOI CES SCÈNES EXISTENT.
 
-`rag-ingestion-pipeline` renomme `minio_url` en `media_url`, dans le graphe ET
-dans les métadonnées ChromaDB, et publie une propriété nouvelle, `object_key`,
-qui porte la clé nue de l'objet — §4.82 du registre. La réingestion a lieu
-pendant que notre version est servie : il y a donc DEUX états des stores à
-tenir, jamais les deux champs ensemble (précision du pipeline, message 45), et
-un troisième cas qui ne doit pas planter.
+`rag-ingestion-pipeline` a renommé le champ de l'URL en `media_url`, dans le
+graphe ET dans les métadonnées ChromaDB, et publie une propriété nouvelle,
+`object_key`, qui porte la clé nue de l'objet — §4.82 du registre. LOT-42 a
+tenu la transition avec un repli sur l'ancien nom ; la réingestion faite, LOT-43
+(§4.83) retire ce repli. Un seul état des stores est lu, et deux cas ne doivent
+ni planter ni produire d'image :
 
-- AVANT : `minio_url` seul — `media_url` et `object_key` n'existent PAS dans le
-  schéma des tags `Picture` et `Table` (`DESCRIBE TAG`, mesuré au §4.82) ;
 - APRÈS : la purge fait `DROP SPACE` puis `CREATE TAG`, sans `ALTER` —
-  `media_url` et `object_key` seuls, `minio_url` n'existe PLUS dans le schéma.
+  `media_url` et `object_key` seuls, l'ancien nom n'existe PLUS dans le schéma.
   ChromaDB suit le même mouvement ;
+- ANCIEN NOM SEUL : l'état d'avant la réingestion. Il n'est plus lu, et c'est
+  ce qui rougit si le repli revient ;
 - AUCUN : aucune des propriétés média.
 
 Chaque état est rejoué aux cinq sites qui lisent le store — les propriétés d'un
@@ -41,8 +41,9 @@ from typing import Any
 import pytest
 
 from src.agent import graph as graph_module
-from src.agent import graph_context, lexical, minio_client, retriever
+from src.agent import graph_context, lexical, retriever, stockage_objet
 from src.api.schemas import ChunkResult, SectionContext
+from tests.unit.test_contrat_champs_externes import CHAMP_URL_RETIRE
 
 # Hôte FICTIF : le dépôt est public, aucun hôte de stockage réel n'y entre.
 _URL = "http://stockage-fictif:9000/documents/images/rapport/bbbbbbbb02_picture.png"
@@ -52,15 +53,20 @@ _ID_SECTION = "5ec1104bcd"
 _ID_TABLEAU = "aaaaaaaa01"
 _ID_FIGURE = "bbbbbbbb02"
 
-# Les deux états des propriétés média d'une illustration. Une propriété absente
-# du dict est ABSENTE DU SCHÉMA : le double la rend NULL, comme le graphd.
+# L'état lu des propriétés média d'une illustration. Une propriété absente du
+# dict est ABSENTE DU SCHÉMA : le double la rend NULL, comme le graphd.
 ETATS: dict[str, dict[str, str]] = {
-    "avant-minio_url-seul": {"minio_url": _URL},
     "apres-media_url-et-object_key": {"media_url": _URL, "object_key": _CLE},
 }
 AUCUN: dict[str, str] = {}
+# Les états qui ne doivent produire AUCUNE image : rien, ou l'ancien nom seul.
+SANS_IMAGE: dict[str, dict[str, str]] = {
+    "aucun": AUCUN,
+    "ancien-nom-seul": {CHAMP_URL_RETIRE: _URL},
+}
 
 _PARAMETRES_ETATS = pytest.mark.parametrize("etat", list(ETATS), ids=list(ETATS))
+_PARAMETRES_SANS_IMAGE = pytest.mark.parametrize("etat", list(SANS_IMAGE), ids=list(SANS_IMAGE))
 
 
 # ─── Le double du graphe : il répond à la requête, il ne la devine pas ────────
@@ -148,33 +154,33 @@ class GrapheDouble:
 
 def _brancher(monkeypatch: pytest.MonkeyPatch, graphe: GrapheDouble) -> None:
     monkeypatch.setattr(graph_context, "_execute", graphe.execute)
-    minio_client._allowed_objects.cache_clear()
+    stockage_objet._allowed_objects.cache_clear()
 
 
 @pytest.fixture(autouse=True)
 def _liste_blanche_neuve() -> Any:
-    minio_client._allowed_objects.cache_clear()
+    stockage_objet._allowed_objects.cache_clear()
     yield
-    minio_client._allowed_objects.cache_clear()
+    stockage_objet._allowed_objects.cache_clear()
 
 
 def test_controle_positif_le_double_refuse_une_forme_quil_ne_modelise_pas() -> None:
     """Sans ce contrôle, un double permissif validerait n'importe quelle requête."""
-    graphe = GrapheDouble(ETATS["avant-minio_url-seul"])
+    graphe = GrapheDouble(ETATS["apres-media_url-et-object_key"])
     with pytest.raises(AssertionError, match="non modélisée"):
         graphe.execute(
-            'MATCH (n:Picture) WHERE n.Picture.minio_url != "" AND 1 == 1 RETURN 1 AS x;'
+            'MATCH (n:Picture) WHERE n.Picture.media_url != "" AND 1 == 1 RETURN 1 AS x;'
         )
     # Et il applique bien la sémantique mesurée : une propriété absente n'est
     # jamais vraie, et elle rend NULL.
     lignes = graphe.execute(
-        'MATCH (n:Picture) WHERE n.Picture.media_url != "" '
-        "RETURN n.Picture.media_url AS media_url;"
+        'MATCH (n:Picture) WHERE n.Picture.s3_url != "" '
+        "RETURN n.Picture.s3_url AS s3_url;"
     )
     assert lignes == []
 
 
-# ─── Site 1 — la liste blanche du proxy : NON VIDE dans les deux états ───────
+# ─── Site 1 — la liste blanche du proxy : NON VIDE dans l'état lu ────────────
 
 
 @_PARAMETRES_ETATS
@@ -185,10 +191,11 @@ def test_la_liste_blanche_porte_la_cle_dans_chaque_etat(
     assert graph_context.media_object_names() == {_CLE}
 
 
+@_PARAMETRES_SANS_IMAGE
 def test_la_liste_blanche_sans_aucun_champ_est_vide_sans_lever(
-    monkeypatch: pytest.MonkeyPatch,
+    etat: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    graphe = GrapheDouble(AUCUN)
+    graphe = GrapheDouble(SANS_IMAGE[etat])
     _brancher(monkeypatch, graphe)
     assert graph_context.media_object_names() == set()
     assert graphe.requetes, "le double n'a été traversé par aucune requête : montage faux"
@@ -225,11 +232,11 @@ class _ClientObjet:
 def _servir(monkeypatch: pytest.MonkeyPatch, chemin: str) -> bytes | None:
     """Ce que fait la route `GET /media/{object_name}` : `get_object_bytes`."""
     client = _ClientObjet()
-    monkeypatch.setattr(minio_client, "_get_minio_client", lambda: client)
-    monkeypatch.setattr(minio_client.settings, "restrict_media_to_graph", True)
-    monkeypatch.setattr(minio_client.settings, "minio_bucket", "documents")
+    monkeypatch.setattr(stockage_objet, "_get_client_s3", lambda: client)
+    monkeypatch.setattr(stockage_objet.settings, "restrict_media_to_graph", True)
+    monkeypatch.setattr(stockage_objet.settings, "s3_bucket", "documents")
     assert chemin.startswith("/media/"), f"l'image ne passe pas par le proxy : {chemin}"
-    return minio_client.get_object_bytes(chemin.removeprefix("/media/"))
+    return stockage_objet.get_object_bytes(chemin.removeprefix("/media/"))
 
 
 def _section(monkeypatch: pytest.MonkeyPatch, graphe: GrapheDouble) -> SectionContext:
@@ -263,7 +270,7 @@ def test_la_citation_du_graphe_porte_son_image_dans_chaque_etat(
     citations, images = graph_module.resolve_citations(_REPONSE, [contexte], [])
 
     assert [c.element_id for c in citations] == [_ID_TABLEAU]
-    assert [(i.element_id, i.minio_url) for i in images] == [(_ID_FIGURE, f"/media/{_CLE}")]
+    assert [(i.element_id, i.media_url) for i in images] == [(_ID_FIGURE, f"/media/{_CLE}")]
 
 
 @_PARAMETRES_ETATS
@@ -276,14 +283,15 @@ def test_l_image_citee_est_servie_par_media_dans_chaque_etat(
     _citations, images = graph_module.resolve_citations(_REPONSE, [contexte], [])
     assert images, "aucune image citée : la scène ne mesure plus le proxy"
 
-    assert _servir(monkeypatch, images[0].minio_url) == b"\x89PNG-figure"
+    assert _servir(monkeypatch, images[0].media_url) == b"\x89PNG-figure"
 
 
+@_PARAMETRES_SANS_IMAGE
 def test_aucun_champ_media_ni_image_ni_plantage(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    etat: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """AUCUN : la citation reste, l'image disparaît, rien ne lève."""
-    contexte = _section(monkeypatch, GrapheDouble(AUCUN))
+    """AUCUN, ou l'ancien nom seul : la citation reste, l'image disparaît, rien ne lève."""
+    contexte = _section(monkeypatch, GrapheDouble(SANS_IMAGE[etat]))
     assert "[img:" not in contexte.markdown
 
     with caplog.at_level(logging.DEBUG):
@@ -358,15 +366,19 @@ def test_les_proprietes_du_sommet_portent_url_et_cle_dans_chaque_etat(
 ) -> None:
     props = _proprietes(monkeypatch, ETATS[etat])
     assert props["tag"] == "Picture"
-    assert props["minio_url"] == _URL
+    assert props["media_url"] == _URL
     assert props["object_key"] == (ETATS[etat].get("object_key"))
 
 
-def test_les_proprietes_du_sommet_sans_champ_media(monkeypatch: pytest.MonkeyPatch) -> None:
-    props = _proprietes(monkeypatch, AUCUN)
+@_PARAMETRES_SANS_IMAGE
+def test_les_proprietes_du_sommet_sans_champ_media(
+    etat: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    props = _proprietes(monkeypatch, SANS_IMAGE[etat])
     assert props["tag"] == "Picture"
-    assert props["minio_url"] is None
+    assert props["media_url"] is None
     assert props["object_key"] is None
+    assert CHAMP_URL_RETIRE not in props
 
 
 # ─── Sites 4 et 5 — les métadonnées ChromaDB, sur les deux chemins ────────────
@@ -434,7 +446,7 @@ def test_le_chunk_chromadb_porte_son_image_servie_dans_chaque_etat(
 ) -> None:
     """Le chunk cité porte son image, et c'est l'objet du seau qui est servi."""
     chunk = _chunk(chemin, ETATS[etat], monkeypatch)
-    assert chunk.minio_url == _URL
+    assert chunk.media_url == _URL
 
     reponse = f"La figure résume les relevés [img:{_ID_FIGURE}] [src:{_ID_FIGURE}]."
     contexte = SectionContext(
@@ -450,17 +462,18 @@ def test_le_chunk_chromadb_porte_son_image_servie_dans_chaque_etat(
     citations, images = graph_module.resolve_citations(reponse, [contexte], [chunk])
 
     assert [c.element_id for c in citations] == [_ID_FIGURE]
-    assert [(i.element_id, i.minio_url) for i in images] == [(_ID_FIGURE, f"/media/{_CLE}")]
+    assert [(i.element_id, i.media_url) for i in images] == [(_ID_FIGURE, f"/media/{_CLE}")]
     _brancher(monkeypatch, GrapheDouble(ETATS[etat]))
-    assert _servir(monkeypatch, images[0].minio_url) == b"\x89PNG-figure"
+    assert _servir(monkeypatch, images[0].media_url) == b"\x89PNG-figure"
 
 
 @pytest.mark.parametrize("chemin", _CHEMINS)
+@_PARAMETRES_SANS_IMAGE
 def test_le_chunk_chromadb_sans_champ_media_ne_plante_pas(
-    chemin: str, monkeypatch: pytest.MonkeyPatch
+    chemin: str, etat: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    chunk = _chunk(chemin, AUCUN, monkeypatch)
-    assert chunk.minio_url is None
+    chunk = _chunk(chemin, SANS_IMAGE[etat], monkeypatch)
+    assert chunk.media_url is None
     assert chunk.object_key is None
     assert chunk.element_id == _ID_FIGURE
 
@@ -478,7 +491,7 @@ _URL_VIRTUAL_HOST = "http://documents.stockage-fictif:9000/images/rapport/bbbbbb
 
 def test_object_key_l_emporte_sur_la_cle_deduite_de_l_url(monkeypatch: pytest.MonkeyPatch) -> None:
     media = {"media_url": _URL_VIRTUAL_HOST, "object_key": _CLE}
-    assert minio_client.object_name_from_url(_URL_VIRTUAL_HOST) != _CLE, (
+    assert stockage_objet.object_name_from_url(_URL_VIRTUAL_HOST) != _CLE, (
         "l'URL de la scène se décode juste : elle ne départage plus rien"
     )
     _brancher(monkeypatch, GrapheDouble(media))
@@ -486,7 +499,7 @@ def test_object_key_l_emporte_sur_la_cle_deduite_de_l_url(monkeypatch: pytest.Mo
 
     contexte = _section(monkeypatch, GrapheDouble(media))
     _citations, images = graph_module.resolve_citations(_REPONSE, [contexte], [])
-    assert [i.minio_url for i in images] == [f"/media/{_CLE}"]
+    assert [i.media_url for i in images] == [f"/media/{_CLE}"]
 
     for chemin in _CHEMINS:
         chunk = _chunk(chemin, media, monkeypatch)
@@ -505,19 +518,20 @@ def test_object_key_l_emporte_sur_la_cle_deduite_de_l_url(monkeypatch: pytest.Mo
             section_title="Résultats",
         )
         _c, images_du_chunk = graph_module.resolve_citations(reponse, [contexte], [chunk])
-        assert [i.minio_url for i in images_du_chunk] == [f"/media/{_CLE}"], chemin
+        assert [i.media_url for i in images_du_chunk] == [f"/media/{_CLE}"], chemin
 
 
 def test_to_media_path_prefere_la_cle_publiee() -> None:
-    assert minio_client.to_media_path(_URL_VIRTUAL_HOST, _CLE) == f"/media/{_CLE}"
+    assert stockage_objet.to_media_path(_URL_VIRTUAL_HOST, _CLE) == f"/media/{_CLE}"
     # Sans clé publiée, la règle d'aujourd'hui, inchangée.
-    assert minio_client.to_media_path(_URL) == f"/media/{_CLE}"
-    assert minio_client.to_media_path(_URL, None) == f"/media/{_CLE}"
+    assert stockage_objet.to_media_path(_URL) == f"/media/{_CLE}"
+    assert stockage_objet.to_media_path(_URL, None) == f"/media/{_CLE}"
 
 
 def test_la_cle_d_objet_ne_fuit_pas_dans_notre_api() -> None:
-    """Étape 3 hors de ce lot : NOTRE réponse ne change pas de forme."""
+    """NOTRE réponse publie l'URL sous `media_url` depuis LOT-43, et jamais la clé."""
     chunk = _lexical(ETATS["apres-media_url-et-object_key"])
     assert chunk.object_key == _CLE
     assert "object_key" not in chunk.model_dump()
-    assert chunk.model_dump()["minio_url"] == _URL
+    assert chunk.model_dump()["media_url"] == _URL
+    assert CHAMP_URL_RETIRE not in chunk.model_dump()

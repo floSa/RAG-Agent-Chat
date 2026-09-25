@@ -35,7 +35,6 @@ from src.agent.graph import (
 from src.agent.graph_context import ping as nebula_ping
 from src.agent.graph_context import reconstruct_section
 from src.agent.llm import PromptFit, generate_stream
-from src.agent.minio_client import get_object_bytes
 from src.agent.retriever import (
     EmbeddingModelMismatchError,
     etat_du_peripherique,
@@ -51,6 +50,7 @@ from src.agent.retriever import (
 from src.agent.retriever import ping as chroma_ping
 from src.agent.settings import settings
 from src.agent.state import AgentState
+from src.agent.stockage_objet import get_object_bytes
 from src.agent.usage import initialiser as usage_initialiser
 from src.agent.usage import record_completion, record_feedback, record_start
 from src.agent.usage import stats as usage_stats
@@ -2109,11 +2109,11 @@ async def feedback(req: FeedbackRequest) -> FeedbackResponse:
     return FeedbackResponse(recorded=True)
 
 
-# ─── Médias (proxy MinIO) ─────────────────────────────────────────────────────
+# ─── Médias (proxy du stockage objet) ─────────────────────────────────────────
 
 @app.get("/media/{object_name:path}", dependencies=[Depends(require_api_key)])
 def media(object_name: str) -> Response:
-    """Sert un objet MinIO (image croppée) au navigateur.
+    """Sert un objet du stockage objet (image croppée) au navigateur.
 
     L'endpoint interne seaweedfs:8333 n'est pas résolvable hors du réseau Docker :
     l'API joue le rôle de proxy pour les images référencées dans les réponses.

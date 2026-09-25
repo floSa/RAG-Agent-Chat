@@ -32,7 +32,7 @@ def test_chunk_result_optional_fields() -> None:
         label="paragraph",
         distance=0.15,
     )
-    assert chunk.minio_url is None
+    assert chunk.media_url is None
     assert chunk.rerank_score is None
 
 

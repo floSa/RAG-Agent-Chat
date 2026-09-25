@@ -46,7 +46,7 @@ import re
 import anyio
 import pytest
 
-from src.agent import graph_context, minio_client
+from src.agent import graph_context, stockage_objet
 
 # ─── Le double : la forme relevée, et rien d'autre ────────────────────────────
 
@@ -161,22 +161,22 @@ class _SessionPerimee:
                 return _ResultatEnEchec(_MESSAGE_TAG_INCONNU.format(nom=tag.group(1)))
             if arete is not None:
                 return _ResultatEnEchec(_MESSAGE_ARETE_INCONNUE.format(nom=arete.group(1)))
-        if tag is not None and "minio_url" in nql:
-            # Le graphe d'AUJOURD'HUI : seul `minio_url` est porté, toute autre
-            # propriété nommée rend NULL.
+        if tag is not None and "media_url" in nql:
+            # Le graphe d'après la réingestion, réduit à l'URL : seul
+            # `media_url` est rendu, toute autre propriété nommée rend NULL.
             urls = self.urls_par_tag.get(tag.group(1), [])
             colonnes = _COLONNE_DU_RETURN.findall(nql)
             return _ResultatOk(
                 [alias for _prop, alias in colonnes],
-                [[u if prop == "minio_url" else None for prop, _alias in colonnes] for u in urls],
+                [[u if prop == "media_url" else None for prop, _alias in colonnes] for u in urls],
             )
         if arete is not None:
             return _ResultatOk(["parent_id", "seq"], [["ffa6bda17d", "7"]])
         return _ResultatOk(["ok"], [["1"]])
 
 
-_URL_PICTURE = "http://minio:9000/documents/images/ouvrage/086f1173cb_picture.png"
-_URL_TABLE = "http://minio:9000/documents/tables/ouvrage/0d1e2f3a4b_table.png"
+_URL_PICTURE = "http://stockage-fictif:9000/documents/images/ouvrage/086f1173cb_picture.png"
+_URL_TABLE = "http://stockage-fictif:9000/documents/tables/ouvrage/0d1e2f3a4b_table.png"
 _CLE_PICTURE = "images/ouvrage/086f1173cb_picture.png"
 _CLE_TABLE = "tables/ouvrage/0d1e2f3a4b_table.png"
 
@@ -201,7 +201,7 @@ def test_controle_positif_le_double_rend_la_forme_relevee_sur_les_trois_natures(
     """
     pool = _SessionPerimee({"Picture": [_URL_PICTURE]}, guerit=False)
 
-    par_tag = pool.execute('MATCH (n:Picture) WHERE n.Picture.minio_url != "" RETURN 1;')
+    par_tag = pool.execute('MATCH (n:Picture) WHERE n.Picture.media_url != "" RETURN 1;')
     assert par_tag.is_succeeded() is False
     assert par_tag.error_code() == _E_SEMANTIC_ERROR
     assert par_tag.error_msg() == "SemanticError: `Picture': Unknown tag"
@@ -282,17 +282,17 @@ def test_garde_2_une_liste_blanche_vide_n_est_pas_mise_en_cache(monkeypatch) -> 
         return set()
 
     monkeypatch.setattr("src.agent.graph_context.media_object_names", noms)
-    minio_client._allowed_objects.cache_clear()
+    stockage_objet._allowed_objects.cache_clear()
 
-    assert minio_client._allowed_objects() == frozenset()
-    assert minio_client._allowed_objects() == frozenset()
+    assert stockage_objet._allowed_objects() == frozenset()
+    assert stockage_objet._allowed_objects() == frozenset()
 
     assert etat["lectures"] == 2, (
         f"le graphe n'a été lu que {etat['lectures']} fois pour deux appels : la "
         "liste blanche VIDE a été mise en cache comme une vérité, et le proxy "
         "/media refusera tout jusqu'au redémarrage du processus"
     )
-    minio_client._allowed_objects.cache_clear()
+    stockage_objet._allowed_objects.cache_clear()
 
 
 def test_garde_2_bis_une_liste_blanche_pleine_reste_mise_en_cache(monkeypatch) -> None:
@@ -306,17 +306,17 @@ def test_garde_2_bis_une_liste_blanche_pleine_reste_mise_en_cache(monkeypatch) -
         return {_CLE_PICTURE}
 
     monkeypatch.setattr("src.agent.graph_context.media_object_names", noms)
-    minio_client._allowed_objects.cache_clear()
+    stockage_objet._allowed_objects.cache_clear()
 
-    assert minio_client._allowed_objects() == frozenset({_CLE_PICTURE})
-    assert minio_client._allowed_objects() == frozenset({_CLE_PICTURE})
+    assert stockage_objet._allowed_objects() == frozenset({_CLE_PICTURE})
+    assert stockage_objet._allowed_objects() == frozenset({_CLE_PICTURE})
 
     assert etat["lectures"] == 1, (
         f"{etat['lectures']} lectures du graphe pour deux appels : une liste "
         "blanche pleine doit rester mise en cache, le proxy étant sur le chemin "
         "de CHAQUE image affichée"
     )
-    minio_client._allowed_objects.cache_clear()
+    stockage_objet._allowed_objects.cache_clear()
 
 
 def test_garde_2_ter_is_allowed_autorise_apres_la_reouverture(monkeypatch) -> None:
@@ -324,18 +324,18 @@ def test_garde_2_ter_is_allowed_autorise_apres_la_reouverture(monkeypatch) -> No
     autorise dès que la session connaît de nouveau les tags."""
     pool = _SessionPerimee({"Picture": [_URL_PICTURE]}, guerit=False)
     _brancher(monkeypatch, pool)
-    minio_client._allowed_objects.cache_clear()
+    stockage_objet._allowed_objects.cache_clear()
 
-    assert minio_client.is_allowed(_CLE_PICTURE) is False
+    assert stockage_objet.is_allowed(_CLE_PICTURE) is False
 
     pool.guerit = True
     pool.rouvrir()
 
-    assert minio_client.is_allowed(_CLE_PICTURE) is True, (
+    assert stockage_objet.is_allowed(_CLE_PICTURE) is True, (
         "le proxy /media refuse encore l'objet alors que la session rouverte "
         "connaît de nouveau le tag : le refus a survécu à sa cause"
     )
-    minio_client._allowed_objects.cache_clear()
+    stockage_objet._allowed_objects.cache_clear()
 
 
 # ─── Garde 3 — /health nomme l'aveuglement ────────────────────────────────────

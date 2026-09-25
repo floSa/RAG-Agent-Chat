@@ -98,7 +98,7 @@ def test_image_sans_url_n_est_pas_rendue() -> None:
 def test_image_porte_sa_legende() -> None:
     """Sans elle, le LLM reçoit un [img:ID] muet et ne peut juger sa pertinence."""
     elem = _elem(
-        "abc1234567", "picture", minio_url="http://minio:9000/documents/x.png",
+        "abc1234567", "picture", media_url="http://stockage-fictif:9000/documents/x.png",
         caption="Répartition des revenus par décile",
     )
     rendu = _render_element(elem)

@@ -146,7 +146,7 @@ class GrapheFactice:
             "label": "document",
             "text": filename,
             "collection": collection,
-            "minio_url": None,
+            "media_url": None,
             "page_no": 0,
         }
         return vid
@@ -156,7 +156,7 @@ class GrapheFactice:
             "tag": tag,
             "label": label,
             "text": text,
-            "minio_url": None,
+            "media_url": None,
             "page_no": 0,
         }
         self.enfants.setdefault(parent, []).append((sequence, vid))
@@ -519,7 +519,7 @@ class GrapheFactice:
                     "child_id": c,
                     "label": self.noeuds[c]["label"],
                     "text": self.noeuds[c]["text"],
-                    "minio_url": self.noeuds[c]["minio_url"],
+                    "media_url": self.noeuds[c]["media_url"],
                     "page_no": self.noeuds[c]["page_no"],
                     "seq": s,
                 }
@@ -1056,14 +1056,14 @@ class TestLeBouchonNeLevePasSurLeCodeSain:
 
         lignes = g.execute(
             'GO FROM "doc_x" OVER PARENT_OF '
-            'WHERE properties($$).minio_url != "" '
+            'WHERE properties($$).media_url != "" '
             "YIELD dst(edge) AS child_id;"
         )
 
         assert len(lignes) == _NB_ENFANTS
         assert GrapheFactice.filtre_sur_sequence(
             'GO FROM "doc_x" OVER PARENT_OF '
-            'WHERE properties($$).minio_url != "" '
+            'WHERE properties($$).media_url != "" '
             "YIELD dst(edge) AS child_id;"
         ) is False
 

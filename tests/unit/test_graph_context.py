@@ -18,7 +18,7 @@ def test_build_markdown_with_breadcrumbs_and_elements() -> None:
             node_id="img1",
             label="picture",
             text="",
-            minio_url="http://minio:9000/documents/images/test/img1_picture.png",
+            media_url="http://stockage-fictif:9000/documents/images/test/img1_picture.png",
             sequence=1,
         ),
     ]

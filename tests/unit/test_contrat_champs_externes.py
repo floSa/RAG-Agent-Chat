@@ -5,10 +5,11 @@ POURQUOI CE MODULE EXISTE.
 Deux sources externes nous rendent des enregistrements dont nous lisons les
 champs PAR LEUR NOM : le graphe NebulaGraph et la collection ChromaDB. Ces noms
 sont un CONTRAT, et ce contrat est écrit par quelqu'un d'autre —
-`rag-ingestion-pipeline`. Il a annoncé qu'il renommerait `minio_url`, et le
-registre (`documentation/axes_amelioration.md` §4.62) mesure ce que ce
-renommage nous ferait : NebulaGraph ne lève pas sur une propriété inconnue —
-un `RETURN` rend `None`, un `WHERE` rend zéro ligne — donc
+`rag-ingestion-pipeline`. Il a renommé le champ de l'URL d'une illustration en
+`media_url`, et le registre (`documentation/axes_amelioration.md` §4.62)
+mesure ce qu'un renommage fait sans nous nous ferait : NebulaGraph ne lève pas
+sur une propriété inconnue — un `RETURN` rend `None`, un `WHERE` rend zéro
+ligne — donc
 `media_object_names()` rendrait un ensemble vide et le proxy `/media`, réglé sur
 `RESTRICT_MEDIA_TO_GRAPH`, refuserait la TOTALITÉ des images. Sans une ligne de
 journal, sans une exception.
@@ -25,7 +26,7 @@ suite rougit, et elle NOMME les sites à suivre.
 
 CE QU'IL NE COUVRE PAS, ET C'EST DÉLIBÉRÉ. Le périmètre est `src/agent/`, le
 seul code qui lit une source EXTERNE. `src/api/schemas.py` et
-`src/frontend/app.py` portent le même nom `minio_url`, mais c'est NOTRE schéma
+`src/frontend/app.py` portent le même nom `media_url`, mais c'est NOTRE schéma
 de réponse — un contrat interne, que nous décidons seuls, et qui n'a pas à
 suivre le calendrier du pipeline. Le mélanger ici ferait rougir cette garde
 pour une décision qui ne la concerne pas.
@@ -46,40 +47,43 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.test_zero_trace_du_nom_retire import NOM_RETIRE
+
 _RACINE = Path(__file__).resolve().parents[2]
 _PERIMETRE = _RACINE / "src" / "agent"
 
 # ─── LE CONTRAT — LE SEUL ENDROIT À CHANGER LE JOUR D'UNE BASCULE ─────────────
 #
 # `mesuré` le 22 septembre 2026 contre `main` = 890f4b9, et rendu au pipeline au
-# §4.62 du registre. La bascule accordée est `minio_url` → `media_url`, plus un
-# champ nouveau `object_key`. LOT-42 (§4.82) la TIENT, en transition : les
-# stores servis portent encore `minio_url` seul, la réingestion — `DROP SPACE`
-# puis `CREATE TAG` — leur donnera `media_url` et `object_key` seuls. Jamais
-# les deux ensemble, mais le code servi traverse les deux états : chaque
-# source nous doit donc TROIS noms, lus aux mêmes sites :
+# §4.62 du registre. La bascule accordée renomme le champ de l'URL en
+# `media_url`, plus un champ nouveau `object_key`. LOT-42 (§4.82) l'a tenue en
+# transition, avec un repli sur l'ancien nom ; LOT-43 (§4.83) la tient à UN SEUL
+# ÉTAT, celui d'après la réingestion — `DROP SPACE` puis `CREATE TAG` : chaque
+# source nous doit DEUX noms, lus aux mêmes sites, et aucun autre :
 #
-# - `media_url` — le nom d'après la bascule, lu EN PREMIER ;
-# - `minio_url` — le repli, tant que la réingestion n'a pas eu lieu ;
+# - `media_url` — l'URL de l'objet ;
 # - `object_key` — la clé nue, préférée à celle qu'on déduit de l'URL.
-#
-# Le repli sur `minio_url` sortira à l'étape 3, après la réingestion : ce jour-là
-# on le retire d'ICI, et la suite nomme les sites à suivre.
 CHAMP_URL = "media_url"
-CHAMP_URL_DE_REPLI = "minio_url"
 CHAMP_CLE = "object_key"
 
 CONTRAT_DES_SOURCES: dict[str, tuple[str, ...]] = {
-    "graphe": (CHAMP_URL, CHAMP_URL_DE_REPLI, CHAMP_CLE),
-    "chromadb": (CHAMP_URL, CHAMP_URL_DE_REPLI, CHAMP_CLE),
+    "graphe": (CHAMP_URL, CHAMP_CLE),
+    "chromadb": (CHAMP_URL, CHAMP_CLE),
 }
+
+# Les noms que le contrat NE porte PLUS, et qu'aucun site ne doit relire : l'ancien
+# nom de l'URL, retiré par la réingestion. Il est ASSEMBLÉ depuis le seul site du
+# dépôt qui assemble le nom retiré — sans quoi ce module s'attraperait à la garde
+# de `test_zero_trace_du_nom_retire.py`.
+CHAMP_URL_RETIRE = NOM_RETIRE + "_url"
+CHAMPS_RETIRES: tuple[str, ...] = (CHAMP_URL_RETIRE,)
 
 # Fonctions par lesquelles une requête part vers le graphe. Les chaînes nGQL
 # qu'elles reçoivent portent des noms de propriétés, qui sont des lectures du
 # contrat au même titre qu'un `.get()`.
 _PORTES_NGQL = frozenset({"_execute", "_execute_raw"})
 
-# Une référence de propriété nGQL : `n.Picture.minio_url`, `properties($$).text`.
+# Une référence de propriété nGQL : `n.Picture.media_url`, `properties($$).text`.
 # Ce motif ne lit PAS un fichier — il lit la valeur d'une constante de chaîne
 # isolée par l'AST dans l'argument d'un appel au graphe. nGQL n'est pas du
 # Python : à l'intérieur de la requête, aucune analyse syntaxique ne nous est
@@ -108,8 +112,8 @@ class SiteAttendu:
     """Un site du contrat, décrit par motif et par nombre d'occurrences.
 
     Les `occurrences` valent pour CHACUN des noms que la source nous doit : un
-    site qui lit `media_url` sans son repli `minio_url`, ou sans `object_key`,
-    est un site où le contrat n'est pas tenu.
+    site qui lit `media_url` sans `object_key`, ou l'inverse, est un site où le
+    contrat n'est pas tenu.
     """
 
     module: str
@@ -126,18 +130,19 @@ class SiteAttendu:
 # ─── L'INVENTAIRE, PAR MOTIF ET JAMAIS PAR NUMÉRO DE LIGNE ────────────────────
 #
 # `mesuré` le 22 septembre 2026 contre `main` = 890f4b9 : six fonctions, trois
-# fichiers, deux sources, sept lectures de `minio_url`. LOT-42 (§4.82) ajoute
-# un septième motif — `media_object_names` lit désormais les colonnes de ses
-# lignes par leur nom, et non plus un alias `url` — et porte chaque motif aux
-# trois noms du contrat : huit lectures de chaque nom, vingt-quatre en tout.
-# C'est la somme CALCULÉE qui est confrontée au relevé, jamais un chiffre recopié.
+# fichiers, deux sources, sept lectures de l'ancien nom de l'URL. LOT-42 (§4.82)
+# ajoute un septième motif — `media_object_names` lit désormais les colonnes de
+# ses lignes par leur nom, et non plus un alias `url` — et porte chaque motif aux
+# noms du contrat : huit lectures de chaque nom. LOT-43 (§4.83) retire le repli :
+# deux noms, seize lectures. C'est la somme CALCULÉE qui est confrontée au
+# relevé, jamais un chiffre recopié.
 SITES_ATTENDUS: tuple[SiteAttendu, ...] = (
     # Le graphe, par ses lignes converties en dicts.
     SiteAttendu("src/agent/graph_context.py", "_get_node_properties", "mapping_get", "graphe", 1),
     SiteAttendu("src/agent/graph_context.py", "_to_elements", "mapping_get", "graphe", 1),
     # Le graphe, par le texte des requêtes. `media_object_names` lit chaque
     # propriété DEUX fois — une en WHERE, une en RETURN. Le WHERE est un `OR`
-    # des trois : `mesuré` le 25 septembre 2026 sur le graphd installé, une
+    # des deux : `mesuré` le 25 septembre 2026 sur le graphd installé, une
     # propriété absente du schéma du tag y rend `__NULL__`, n'est jamais vraie
     # et ne fait pas échouer la requête — §4.82.
     SiteAttendu("src/agent/graph_context.py", "media_object_names", "ngql_property", "graphe", 2),
@@ -335,7 +340,7 @@ def test_le_releveur_voit_ses_trois_natures() -> None:
     `test_le_releveur_voit_quelque_chose` ne prenait ses témoins que dans deux
     natures sur trois : aucun ne portait la nature `subscript`. `mesuré` le
     22 septembre 2026, base 38ac068 : le releveur privé de cette nature, ET un
-    site `meta["minio_url"]` ajouté dans `src/agent/lexical.py`, laissaient les
+    site `meta["<nom du contrat>"]` ajouté dans `src/agent/lexical.py`, laissaient les
     dix-huit gardes du lot VERTES — `rc(pytest)=0`, 18 passés. La garde « aucun
     site inattendu » devenait aveugle à une façon d'écrire la lecture, sans
     qu'aucun témoin ne le dise.
@@ -421,8 +426,8 @@ def test_aucune_lecture_du_champ_hors_de_l_inventaire(sites_du_contrat: list[Sit
 def test_le_compte_total_est_celui_de_l_inventaire(sites_du_contrat: list[SiteReleve]) -> None:
     """Le compte est une PROPRIÉTÉ, pas un nombre recopié.
 
-    Il valait sept au 22 septembre 2026 (`mesuré`, `main` = 890f4b9) et vaut
-    vingt-quatre depuis LOT-42, mais aucun de ces nombres n'est écrit ici : le
+    Il valait sept au 22 septembre 2026 (`mesuré`, `main` = 890f4b9), vingt-quatre
+    avec LOT-42 et seize depuis LOT-43, mais aucun de ces nombres n'est écrit ici : le
     total attendu est CALCULÉ depuis l'inventaire et le contrat. Un
     site ajouté à l'inventaire sans son équivalent dans `src/` rougit, et
     l'inverse aussi.
@@ -474,7 +479,7 @@ def test_le_releve_ignore_le_nom_interne_du_schema() -> None:
     """La frontière du périmètre est tenue, et elle est vérifiée.
 
     `src/api/schemas.py` et `src/frontend/app.py` portent le même nom
-    `minio_url`, mais c'est NOTRE contrat de réponse. Il n'est pas dicté par le
+    `media_url`, mais c'est NOTRE contrat de réponse. Il n'est pas dicté par le
     pipeline et n'a pas à rougir avec lui. Si cette garde se met à échouer,
     c'est que le périmètre a bougé — et il faut décider, pas élargir.
     """
@@ -482,3 +487,47 @@ def test_le_releve_ignore_le_nom_interne_du_schema() -> None:
     hors_perimetre = _RACINE / "src" / "api" / "schemas.py"
     assert hors_perimetre.exists(), "le fichier témoin du contrat interne a disparu"
     assert hors_perimetre not in set(_PERIMETRE.rglob("*.py"))
+
+
+def test_aucun_champ_retire_n_est_relu(releves: list[SiteReleve]) -> None:
+    """LE CONTRAT À UN SEUL ÉTAT : l'ancien nom de l'URL n'est lu à AUCUN site.
+
+    C'est la moitié que l'inventaire ne tient pas : il compte les lectures des
+    noms du contrat, et un repli sur l'ancien nom rétabli À CÔTÉ de `media_url`
+    laisserait ces comptes justes. La réingestion a retiré ce nom des stores ;
+    le relire serait lire un champ qui n'existe plus — et le jour où une source
+    oubliée le porterait encore, servir ce que le contrat ne garantit pas.
+    """
+    relus = sorted(
+        f"{s.module}:{s.ligne} ({s.fonction}, {s.nature}) lit « {s.champ} »"
+        for s in releves
+        if s.champ in CHAMPS_RETIRES
+    )
+    assert not relus, (
+        "Un nom retiré du contrat est relu dans src/agent/ :\n  " + "\n  ".join(relus)
+    )
+
+
+def test_controle_positif_le_releveur_voit_un_champ_retire_a_chaque_nature() -> None:
+    """Sans ce contrôle, la garde ci-dessus serait verte sur un releveur aveugle.
+
+    Le fragment porte le nom retiré aux trois natures, et le releveur doit
+    l'y voir trois fois : c'est ce qui rend la garde « aucun champ retiré »
+    capable de rougir, et non seulement de rester verte.
+    """
+    fragment = (
+        "def temoin(meta, row):\n"
+        f"    _a = meta.get({CHAMP_URL_RETIRE!r})\n"
+        f"    _b = row[{CHAMP_URL_RETIRE!r}]\n"
+        f"    return _execute(f'MATCH (n:Tag) RETURN n.Tag.{CHAMP_URL_RETIRE} AS x;')\n"
+    )
+    natures = {
+        s.nature for s in relever_dans_le_texte("temoin.py", fragment) if s.champ in CHAMPS_RETIRES
+    }
+    assert natures == {"mapping_get", "subscript", "ngql_property"}, natures
+
+
+def test_aucun_nom_retire_n_est_au_contrat() -> None:
+    """Un nom ne peut pas être à la fois retiré et dû : le contrat a un seul état."""
+    noms = {nom for noms_source in CONTRAT_DES_SOURCES.values() for nom in noms_source}
+    assert not noms & set(CHAMPS_RETIRES), sorted(noms & set(CHAMPS_RETIRES))
