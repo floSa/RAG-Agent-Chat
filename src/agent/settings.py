@@ -22,10 +22,7 @@ class Settings(BaseSettings):
     # graphd fige la requête FastAPI qui l'attend.
     nebula_timeout_ms: int = Field(default=15_000, alias="NEBULA_TIMEOUT_MS")
 
-    # Le stockage objet, servi en S3 (SeaweedFS). Les anciens noms de ces
-    # variables ne sont PAS relus : `extra="ignore"` les laisse passer sans un
-    # mot, et le proxy /media partirait sans clé. La table de passage est au
-    # registre, §4.83 de `documentation/axes_amelioration.md`.
+    # Stockage objet S3 (SeaweedFS). Anciens noms NON relus : table au §4.83 du registre.
     s3_endpoint: str = Field(default="seaweedfs:8333", alias="S3_ENDPOINT")
     s3_access_key: str = Field(default="", alias="S3_ACCESS_KEY")
     s3_secret_key: str = Field(default="", alias="S3_SECRET_KEY")

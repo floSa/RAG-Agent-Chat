@@ -49,8 +49,9 @@ def cle_objet(object_key: str | None, url: str | None) -> str | None:
     `object_key` est la propriété que le pipeline publie depuis la bascule de
     son stockage objet — §4.82 de `documentation/axes_amelioration.md`. Elle
     porte la clé NUE, et nous affranchit du décodage positionnel de l'URL, que
-    le §4.62 a mesuré faux sur une URL en virtual-host style. Quand elle
-    manque, la clé est déduite de l'URL, par la même règle qu'avant.
+    le §4.62 a mesuré faux sur une URL en virtual-host style. Quand un
+    enregistrement ne la porte pas, la clé est déduite de l'URL, par la même
+    règle qu'avant.
     """
     if object_key:
         return object_key

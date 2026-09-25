@@ -149,8 +149,8 @@ session antérieure à un redémarrage ([`sessions.py`](src/agent/sessions.py)).
 
 Les illustrations et les tableaux découpés vivent dans un **stockage d'objets
 compatible S3**, que l'agent lit sans jamais y écrire. Il est configuré par cinq
-variables — `MINIO_ENDPOINT`, `MINIO_BUCKET`, `MINIO_SECURE`, `MINIO_ROOT_USER`
-et `MINIO_ROOT_PASSWORD` (`.env.example`, [`settings.py:25-30`](src/agent/settings.py)).
+variables — `S3_ENDPOINT`, `S3_BUCKET`, `S3_SECURE`, `S3_ACCESS_KEY`
+et `S3_SECRET_KEY` (`.env.example`, [`settings.py:25-30`](src/agent/settings.py)).
 **Aucune valeur n'est reproduite ici : ce dépôt est public.**
 
 Le navigateur ne voit pas le réseau Docker interne. L'agent expose donc
@@ -162,10 +162,10 @@ Le navigateur ne voit pas le réseau Docker interne. L'agent expose donc
 > l'initiative du pipeline voisin, et le corpus est entièrement réingéré — il
 > n'y a rien à migrer de notre côté. Le principe retenu des deux côtés est
 > écrit : **on ne nomme pas le produit dans le contrat**. Le champ externe
-> `minio_url` deviendra `media_url`, et un champ `object_key` portera la clé
+> `<ancien champ de l'URL>` deviendra `media_url`, et un champ `object_key` portera la clé
 > nue. Inventaire complet, avec ce qui casserait en silence si le renommage
 > arrivait sans prévenir : [axes_amelioration.md](documentation/axes_amelioration.md)
-> §4.62. Le code de ce dépôt lit **encore** `minio_url` (`git grep -n minio_url -- src`,
+> §4.62. Le code de ce dépôt lit **encore** `<ancien champ de l'URL>` (`git grep -n <ancien champ de l'URL> -- src`,
 > `mesuré` le 25 septembre 2026 à 08:32 UTC : 7 fichiers, 28 lignes).
 
 ---
@@ -194,7 +194,7 @@ cp .env.example .env
 
 `.env.example` est versionné et complet. Les valeurs de secret ne sont écrites
 nulle part dans ce dépôt, qui est public. Pour le stockage objet, l'agent ne fait
-que LIRE : `MINIO_ROOT_USER` et `MINIO_ROOT_PASSWORD` reçoivent le jeu **lecture
+que LIRE : `S3_ACCESS_KEY` et `S3_SECRET_KEY` reçoivent le jeu **lecture
 seule** que publie le projet d'ingestion (`SEAWEEDFS_RO_ACCESS_KEY` et
 `SEAWEEDFS_RO_SECRET_KEY` de son `.env`), et non ses clés d'administration.
 
@@ -392,7 +392,7 @@ rag-agent-chat/
 │   │   ├── retriever.py        # Recherche dense + lexicale, fusion RRF, reranking
 │   │   ├── lexical.py          # Index BM25
 │   │   ├── graph_context.py    # Reconstruction de section par le graphe
-│   │   ├── minio_client.py     # Accès au stockage d'objets
+│   │   ├── stockage_objet.py   # Accès au stockage d'objets
 │   │   ├── llm.py              # Client du modèle : génération, traduction, réécriture
 │   │   ├── flux_llm.py         # Lecture du flux de génération
 │   │   ├── dialecte_llm.py     # Forme des requêtes au serveur d'inférence
@@ -425,7 +425,7 @@ rag-agent-chat/
 | ChromaDB | Base vectorielle | Apache-2.0 |
 | sentence-transformers | Embeddings et reranking | Apache-2.0 |
 | Nebula Graph (nebula3-python) | Graphe | Apache-2.0 |
-| SDK du stockage d'objets (`minio`) | Client S3 | Apache-2.0 |
+| SDK du stockage d'objets (bibliothèque cliente S3 de `requirements.txt`) | Client S3 | Apache-2.0 |
 | Jinja2 | Templating | BSD-3-Clause |
 | Pydantic | Configuration et typage | MIT |
 | **Ce projet** | Code applicatif | MIT — Copyright (c) 2026 floSa `<à confirmer : aucun fichier LICENSE présent>` |
@@ -433,4 +433,5 @@ rag-agent-chat/
 > La licence du **serveur** de stockage d'objets n'est plus listée ici : le
 > produit bascule le 25 septembre 2026 et le dépôt ne le nomme pas dans son
 > contrat (§1.6). La ligne ci-dessus est celle du **SDK client**, qui est une
-> dépendance de ce dépôt — `minio==7.2.20`, Apache-2.0.
+> dépendance de ce dépôt — la bibliothèque cliente S3 en 7.2.20, épinglée dans
+> `requirements.txt`, Apache-2.0.

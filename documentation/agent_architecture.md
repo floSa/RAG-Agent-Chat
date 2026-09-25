@@ -2,7 +2,7 @@
 
 ## Vue d'ensemble
 
-`rag-agent-chat` est une application de question-réponse documentaire basée sur un agent LangGraph avec interruption humaine (*human-in-the-loop*). Il consomme en lecture seule les données produites par `rag-ingestion-pipeline` (ChromaDB, NebulaGraph, MinIO) et expose une API FastAPI ainsi qu'une interface Streamlit.
+`rag-agent-chat` est une application de question-réponse documentaire basée sur un agent LangGraph avec interruption humaine (*human-in-the-loop*). Il consomme en lecture seule les données produites par `rag-ingestion-pipeline` (ChromaDB, NebulaGraph, stockage objet) et expose une API FastAPI ainsi qu'une interface Streamlit.
 
 ---
 
@@ -11,7 +11,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                   rag-ingestion-pipeline                        │
-│   Documents ──▶ Docling ──▶ ChromaDB │ NebulaGraph │ MinIO     │
+│  Documents ─▶ Docling ─▶ ChromaDB │ NebulaGraph │ stockage objet│
 └────────────────────────────┬────────────────────────────────────┘
                              │ réseau Docker : rag-ingestion-pipeline_rag_network
 ┌────────────────────────────▼────────────────────────────────────┐
@@ -19,14 +19,14 @@
 │                                                                 │
 │  Streamlit (8501) ◀──▶ FastAPI/LangGraph (8001) ◀──▶ vLLM     │
 │                                │                                │
-│              ChromaDB │ NebulaGraph │ MinIO (lecture seule)    │
+│         ChromaDB │ NebulaGraph │ stockage objet (lecture seule) │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **Interactions externes** :
 - ChromaDB `:8080` — recherche vectorielle (lecture)
 - NebulaGraph `:9669` — reconstruction contextuelle (lecture)
-- MinIO `:9000` — URLs présignées pour images/tableaux (lecture)
+- Stockage objet `:9000` — URLs présignées pour images/tableaux (lecture)
 - vLLM `:8000` — inférence LLM (service central, réseau `llm-net`)
 
 ---
@@ -202,7 +202,7 @@ par `GET /health` sous `sessions`.
 | `llm.py`            | Client du moteur (dialecte OpenAI, via `dialecte_llm`), réécriture et traduction de requête, budget de contexte, outil `search_vectors` |
 | `retriever.py`      | Recherche dense + lexicale, reranking, déduplication, texte intégral |
 | `lexical.py`        | Index BM25 en mémoire et fusion Reciprocal Rank Fusion          |
-| `minio_client.py`   | Lecture des objets MinIO servis par le proxy `/media`           |
+| `stockage_objet.py` | Lecture des objets du stockage objet servis par le proxy `/media` |
 | `state.py`          | `AgentState` — TypedDict LangGraph (question, chunks, contextes, réponse, chronométrage) |
 | `settings.py`       | Configuration via `pydantic-settings` (lecture `.env`)          |
 | `usage.py`          | Capture d'usage : questions posées, sources proposées et décochées, réponses, appréciations ([capture_usage.md](capture_usage.md)) |
@@ -228,7 +228,7 @@ par `GET /health` sous `sessions`.
 
 - Collection : `rag_documents`
 - Embedding : `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions) — **doit être identique à l'ingestion**. Ce document a longtemps annoncé `all-MiniLM-L6-v2`, un modèle anglais : c'est faux depuis la réingestion multilingue, et c'est la plus coûteuse des fausses valeurs possibles — un embedder qui ne correspond pas à celui de l'ingestion rend des passages au hasard. Cette phrase se poursuivait par « sans exception, sans log et sans sonde » : **ce n'est plus vrai depuis le 4 septembre 2026**, l'agent confronte son réglage à l'estampille de la collection et refuse de chercher en `503` — y compris quand l'estampille est absente. Voir `axes_amelioration.md` §4.4. La valeur qui s'exécute est dans `settings.py`
-- Métadonnées disponibles par chunk : `element_id`, `graph_node_id`, `filename`, `collection`, `source_path`, `section_title`, `language`, `depth`, `page_no`, `minio_url`, `chunk_index`, `chunk_count`. Ce que l'agent fait de chacune est dans [stores.md](stores.md), qui fait référence — `source_path` est l'**identité** du document, et non `filename`
+- Métadonnées disponibles par chunk : `element_id`, `graph_node_id`, `filename`, `collection`, `source_path`, `section_title`, `language`, `depth`, `page_no`, `media_url`, `chunk_index`, `chunk_count`. Ce que l'agent fait de chacune est dans [stores.md](stores.md), qui fait référence — `source_path` est l'**identité** du document, et non `filename`
 - Paramètres de retrieval : `RETRIEVAL_TOP_K=50` (candidats après fusion) → `RERANK_TOP_K=10` (après reranking). La table des paramètres de ce document disait déjà 50 ; cette ligne était restée à 20, la valeur d'avant l'élargissement du vivier
 - **Aucun filtre de pertinence.** `rerank` rend les `RERANK_TOP_K` mieux classées quel que soit leur score : le système n'a pas de seuil, et une question hors corpus reçoit dix sources comme les autres. Ce document a décrit un `RERANK_MIN_SCORE=0.0` qui n'a jamais existé dans `settings.py` — l'affirmation est retirée, le manque est ouvert dans [axes_amelioration.md](axes_amelioration.md) avec les deux autres manifestations du même problème (badge de pertinence purement relatif, `min_length=1` sur la sélection)
 - Situer le passage dans l'interface de sélection ne coûte **aucun** appel au graphe : le titre de section est lu dans la métadonnée `section_title` de ChromaDB, portée par `ChunkResult` et affichée telle quelle. Ce document décrivait un enrichissement par NebulaGraph via `get_section_text`, produisant un champ `section_header_text` : ces deux symboles n'existent nulle part dans `src/`. Le graphe n'est traversé qu'après la sélection, par `reconstruct_section`
@@ -237,7 +237,7 @@ par `GET /health` sous `sessions`.
 
 - Space : `rag_space`
 - Tags lus : `Document`, `SectionHeader`, `Paragraph`, `Table`, `Picture`, `Code`, `Formula`, `Caption`, `ListItem`, `Footnote`, `PageHeader`, `PageFooter`
-- Propriétés lues : `label`, `text`, `minio_url`, `page_no`
+- Propriétés lues : `label`, `text`, `media_url`, `page_no`
 - Edge utilisé : `PARENT_OF(sequence)` — traversal ascendant (`REVERSELY`) et descendant. `sequence` porte **trois réserves de lecture** qui décident de la forme du fenêtrage : site canonique, [stores.md](stores.md#les-trois-réserves-de-lecture-de-sequence)
 - Requête propriétés : `FETCH PROP ON * "vid"` (1 requête pour tous les tags) + fallback `FETCH PROP ON Document` pour les nœuds racines
 - Requête ascendante : `GO FROM v OVER PARENT_OF REVERSELY YIELD src(edge) AS parent_id`
@@ -248,11 +248,11 @@ par `GET /health` sous `sessions`.
 
 **Note sur `REVERSELY`** : `YIELD src(edge)` retourne l'origine de l'arête originale (le parent), pas la destination. Utiliser `dst(edge)` retournerait le nœud de départ lui-même.
 
-### Contrat de lecture MinIO
+### Contrat de lecture du stockage objet
 
 - Bucket : `documents`
-- Accès : URLs présignées via `minio_client.get_presigned_url(minio_url)` (TTL 1 heure par défaut)
-- Les `minio_url` sont stockées dans NebulaGraph comme chemin relatif : `bucket/path/to/image.png`
+- Accès : URLs présignées via `stockage_objet.get_presigned_url(media_url)` (TTL 1 heure par défaut)
+- Les `media_url` sont stockées dans NebulaGraph comme chemin relatif : `bucket/path/to/image.png`
 
 ### État de l'agent (`AgentState`)
 
@@ -490,7 +490,7 @@ docker-compose.yml
 
 | Réseau      | Type     | Rôle                                                     |
 |-------------|----------|----------------------------------------------------------|
-| `rag_network` | external | Réseau partagé avec `rag-ingestion-pipeline` — accès ChromaDB, NebulaGraph, MinIO |
+| `rag_network` | external | Réseau partagé avec `rag-ingestion-pipeline` — accès ChromaDB, NebulaGraph, stockage objet |
 | `internal`  | bridge   | Réseau interne : Streamlit → agent-api                    |
 
 Le frontend n'est pas connecté au réseau `rag_network` (il ne communique qu'avec `agent-api`).
@@ -499,7 +499,7 @@ Le frontend n'est pas connecté au réseau `rag_network` (il ne communique qu'av
 
 ```
 rag-ingestion-pipeline (prérequis externe, déjà démarré)
-    └── ChromaDB, NebulaGraph, MinIO disponibles sur rag_network
+    └── ChromaDB, NebulaGraph, stockage objet disponibles sur rag_network
 
 vllm-central (monté par le projet llm-service, hors de ce dépôt)
     └── réseau llm-net disponible
@@ -527,7 +527,7 @@ frontend (attend agent-api healthy)
 | POST    | `/chat/resume`           | Reprend après sélection sources → génération        |
 | POST    | `/feedback`              | Appréciation binaire d'une réponse + commentaire libre |
 | POST    | `/reindex`               | Reconstruit l'index lexical BM25 sur le corpus courant. **Appelé par l'ingestion en fin de pipeline** : sans lui, un document ingéré après le démarrage reste invisible en recherche lexicale |
-| GET     | `/media/{object_name}`   | Proxy des objets MinIO — les URLs internes ne sont pas résolvables par le navigateur. Borné aux objets référencés par le graphe |
+| GET     | `/media/{object_name}`   | Proxy des objets du stockage objet — les URLs internes ne sont pas résolvables par le navigateur. Borné aux objets référencés par le graphe |
 
 Onze routes. `/health` est la seule qui n'exige pas `X-API-Key` quand une clé
 est configurée : une sonde doit rester interrogeable sans secret.

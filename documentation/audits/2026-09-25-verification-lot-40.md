@@ -197,10 +197,10 @@ dépendances et au service :
   (`schemas.py:282-287`), avec la justification écrite au site ;
 - `graph_text_truncation` défaut **2000** (`settings.py:499`), `_restore_full_text`
   bien à **852**, le seuil dérivé bien à **870** ;
-- `git grep -n minio_url -- src` → **28 lignes, 7 fichiers** : **exactement ce
+- `git grep -n <ancien champ de l'URL> -- src` → **28 lignes, 7 fichiers** : **exactement ce
   que le README annonce** ;
 - les badges : Python **3.12**, FastAPI **0.141**(.1), LangGraph **1.2**(.10),
-  Streamlit **1.60**(.0), vLLM **0.28**(.0 au `/health`), `minio==7.2.20` :
+  Streamlit **1.60**(.0), vLLM **0.28**(.0 au `/health`), la bibliothèque cliente S3 7.2.20 :
   tous exacts contre `requirements.txt` et `pyproject.toml` ;
 - la porte : `mypy` **22 fichiers**, **1263** tests — **remesurés ici**.
 
@@ -297,7 +297,7 @@ la qualité principale de ces trois documents :
 |---|---|---|---|
 | a | `etat` §2.4 / `prochaines` §2 | « `reviewed: false` sur les trois jeux », « **Aucune** des questions n'a été relue par un humain » | **Non bornée ET fausse.** Cf. **B2** |
 | b | `prochaines` §1 | « **Registre : aucune section ne la porte** » | Non bornée : aucune commande, aucun motif de relevé n'est donné pour ce zéro. Le zéro est plausible mais **non doublé**, alors que le même document double le sien ailleurs |
-| c | README §1.6 | « l'agent lit [le stockage] **sans jamais y écrire** » | Non bornée en forme, mais **vraie à la mesure** : `grep -rnE '\.(put_object\|fput_object\|remove_object\|make_bucket\|copy_object)\(' src/` rend **rc=1**, aucune ligne ; contrôle positif sur les lectures de `minio_client.py` : **1** ligne |
+| c | README §1.6 | « l'agent lit [le stockage] **sans jamais y écrire** » | Non bornée en forme, mais **vraie à la mesure** : `grep -rnE '\.(put_object\|fput_object\|remove_object\|make_bucket\|copy_object)\(' src/` rend **rc=1**, aucune ligne ; contrôle positif sur les lectures de `stockage_objet.py` : **1** ligne |
 | d | README §2.4 | « laissée vide, **toutes** les routes répondent sans authentification » | Bornée par le code : `require_api_key` ne mord que si `API_KEY` est posée, et `/health` n'en dépend pas. **Vraie** |
 | e | README §3 | « Onze routes, et ce sont **exactement** les onze que le service publie » | Bornée : datée, et adossée à deux lectures indépendantes. **Vérifiée vraie ici** |
 | f | `prochaines` §4 | « le §4.78 **refuse** le reranking par sous-question » | Le §4.78 écrit *« ne propose aucun réglage, et il ne recommande pas d'implémenter la décomposition »*. « Refuser » **durcit** le site. Cf. **N4** |
@@ -312,7 +312,7 @@ Relevé par motif sur les cinq fichiers de l'objet
 | Ce qui est cherché | Commande | Compte |
 |---|---|---|
 | adresse IP | `grep -nE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' $F` | **0** |
-| hôte ou port de stockage | `grep -nE 'minio[:.]\|:9000\|:9001\|seaweed\|s3\.\|bucket *=\|MINIO_[A-Z_]*=' $F` | **0** (`rc=1`) |
+| hôte ou port de stockage | `grep -nE '<nom de l'ancien stockage objet>[:.]\|:9000\|:9001\|seaweed\|s3\.\|bucket *=\|<ANCIEN PRÉFIXE>_[A-Z_]*=' $F` | **0** (`rc=1`) |
 | valeur de secret | `grep -nE 'PASSWORD *= *\S\|SECRET *= *\S\|API_KEY *= *\S\|TOKEN *= *\S' $F` | **0** (`rc=1`) |
 | outil de génération de code | `grep -niE` sur un motif de **dix** noms d'assistants et de signatures automatiques, insensible à la casse | **1** correspondance, et ce n'en est pas une : `llm.md:28`, « le **dialecte OpenAI** » — un nom de **protocole d'API**, pas un outil de génération. Motif tenu hors de ce rapport, qui entre lui aussi dans un dépôt public |
 

@@ -1,7 +1,7 @@
 # Sécurité
 
 Ce document décrit la posture de **rag-agent-chat**. La sécurité des stores
-(ChromaDB, NebulaGraph, MinIO) relève de
+(ChromaDB, NebulaGraph, stockage objet) relève de
 [rag-ingestion-pipeline](https://github.com/floSa/rag-ingestion-pipeline), celle
 des modèles de [llm-service](https://github.com/floSa/llm-service).
 
@@ -165,7 +165,7 @@ mesurable** ce qui était déjà durable et invisible.
 
 - `.env` est ignoré par git ; `.env.example` documente les clés sans valeurs.
 - Vérifier avant de publier : `git ls-files | grep -c '^\.env$'` doit rendre `0`.
-- `MINIO_ROOT_PASSWORD` doit valoir la même chose que dans le projet
+- `S3_SECRET_KEY` doit valoir la même chose que dans le projet
   d'ingestion — c'est le seul secret partagé.
 
 ## Dépendances

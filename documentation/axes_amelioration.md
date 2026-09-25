@@ -435,7 +435,7 @@ en recherche lexicale jusqu'au prochain redémarrage. La recherche devenait
 silencieusement **asymétrique**, tandis que `/health` continuait d'annoncer
 `index_lexical: true`. Il l'était : il décrivait un corpus qui n'existait plus.
 
-Le dépôt avait déjà résolu ce problème ailleurs — `minio_client.is_allowed`
+Le dépôt avait déjà résolu ce problème ailleurs — `stockage_objet.is_allowed`
 relit la liste des objets autorisés sur échec, avec le commentaire « un document
 fraîchement ingéré apporte de nouvelles illustrations, et l'agent ne redémarre
 pas pour autant ». Le raisonnement n'avait pas été appliqué ici.
@@ -549,7 +549,7 @@ ou un `except:` sans type. Le décompte est reproductible :
 python3 - <<'EOF'
 import ast, subprocess
 for f in ("src/agent/graph.py","src/agent/graph_context.py","src/agent/llm.py",
-          "src/agent/minio_client.py","src/agent/retriever.py","src/agent/usage.py",
+          "src/agent/stockage_objet.py","src/agent/retriever.py","src/agent/usage.py",
           "src/api/main.py","src/agent/sessions.py"):
     r = subprocess.run(["git","show",f"b456ab1:{f}"], capture_output=True, text=True)
     if r.returncode: continue
@@ -604,7 +604,7 @@ larges :**
 | `graph_context.py` | `_execute_raw` | Reprise de connexion. nebula3 mêle transport, authentification et session sans ancêtre commun. WARNING puis nouvel essai ; un second échec remonte. |
 | `graph_context.py` | `props_of` | Large et **muette** : un nœud sans propriétés pour ce tag est le cas NORMAL — le tag `Document` n'a ni `label` ni `text`. Appelée plusieurs fois par élément : y journaliser inonderait le journal en régime nominal. |
 | `graph_context.py` | `ping` | Une sonde ne doit jamais lever. `_execute` a déjà journalisé la panne en WARNING. |
-| `minio_client.py` | `get_object_bytes` | Reprise de connexion. Le SDK minio mêle ses `S3Error` aux erreurs urllib3 d'un socket mort. WARNING au premier essai, pile complète au second. |
+| `stockage_objet.py` | `get_object_bytes` | Reprise de connexion. Le SDK S3 mêle ses `S3Error` aux erreurs urllib3 d'un socket mort. WARNING au premier essai, pile complète au second. |
 | `graph.py` | `node_reconstruct_context` | Une source illisible ne doit pas emporter la réponse entière. Message recalé (ci-dessus). |
 | `graph.py` | `build_checkpointer` | Volume non monté, disque en lecture seule, aiosqlite en défaut : mieux vaut un service dégradé qu'un service mort. ERROR avec trace — le repli change le comportement du service. |
 | `api/main.py` | `context` | La reconstruction traverse Nebula, Chroma et le parsing de leurs réponses. Journal ajouté (ci-dessus). |
@@ -1416,7 +1416,7 @@ de [`pilotage_du_chantier.md`](pilotage_du_chantier.md).
 > test dont l'audit a mesuré qu'il est **le seul garde de deux mutations du
 > producteur**.
 >
-> **`.env.example` porte toujours `MINIO_ROOT_USER=minioadmin` là où ce poste
+> **`.env.example` porte toujours `S3_ACCESS_KEY=<défaut de l'ancien stockage objet>` là où ce poste
 > exige `admin`** : le lot ne l'a pas corrigé, c'était hors de son mandat. Reste
 > ouvert, petit, sans garde.
 
@@ -1443,8 +1443,8 @@ fausse :**
 
 | Clé | Ce que `.env.example` propose | Ce que le poste exige |
 |---|---|---|
-| `MINIO_ROOT_USER` | `minioadmin` | **`admin`** — c'est ce que porte le `.env` du pipeline. La valeur de l'exemple est **fausse pour ce poste** |
-| `MINIO_ROOT_PASSWORD` | vide, avec le commentaire « même valeur que rag-ingestion-pipeline » | à recopier depuis le `.env` du pipeline. **Ne la recopie dans aucun document, aucun commit, aucun rapport** |
+| `S3_ACCESS_KEY` | `<défaut de l'ancien stockage objet>` | **`admin`** — c'est ce que porte le `.env` du pipeline. La valeur de l'exemple est **fausse pour ce poste** |
+| `S3_SECRET_KEY` | vide, avec le commentaire « même valeur que rag-ingestion-pipeline » | à recopier depuis le `.env` du pipeline. **Ne la recopie dans aucun document, aucun commit, aucun rapport** |
 
 `API_KEY` est vide de ce côté et `AGENT_API_KEY` est vide du côté pipeline
 (`mesuré`) : les deux s'accordent, aucun en-tête n'est envoyé et aucun n'est
@@ -2186,7 +2186,7 @@ ce que le lot en annonçait.
 
 ### 4.10 Un secret vivant a fui hors du dépôt, et il est traité
 
-`mesuré` le 3 septembre 2026 : le mot de passe MinIO du pipeline subsistait **en
+`mesuré` le 3 septembre 2026 : le mot de passe de l'ancien stockage objet du pipeline subsistait **en
 clair** dans un fichier de travail hors dépôt, écrit par le lot 1 et non nettoyé.
 Exposition bornée au compte propriétaire, la chaîne de répertoires étant en
 `0700`. **Traité par le pilote le jour même** : fichier détruit, absence du
@@ -3792,7 +3792,7 @@ payée d'un dépôt entier. `mesuré` avant le push, jamais après :
 | attribution à un assistant, messages **et** fichiers | **0** |
 | `.env` suivi ? | **non**, et `.gitignore` le couvre en cinq formes |
 | ligne ajoutée portant une valeur de secret | **aucune** |
-| le mot de passe MinIO du poste dans le diff poussé | **0 occurrence** — recherché sans être imprimé |
+| le mot de passe de l'ancien stockage objet du poste dans le diff poussé | **0 occurrence** — recherché sans être imprimé |
 
 **Et le trou reste ouvert** : le garde-fou d'identité couvre `commit`, `--amend`,
 `--author=`, `merge --no-ff` et `merge --squash`, **mais pas `push`**. Ce push a
@@ -10059,20 +10059,20 @@ du moteur éprouvé, et les deux postes sont assertés sur ce qu'ils **rendent**
 
 ### 4.62 → L'inventaire rendu au pipeline sur la bascule du stockage objet
 
-`rag-ingestion-pipeline` remplace MinIO (AGPL-3.0) par SeaweedFS ou versitygw
+`rag-ingestion-pipeline` remplace l'ancien stockage objet (AGPL-3.0) par SeaweedFS ou versitygw
 (Apache-2.0). Le corpus sera **entièrement réingéré** : aucune donnée à migrer
-de notre côté. Le champ `minio_url` **change de nom et de valeur**. Inventaire
+de notre côté. Le champ `<ancien champ de l'URL>` **change de nom et de valeur**. Inventaire
 rendu le 22 septembre 2026, `mesuré` contre `main` = `a848761` et contre l'agent
 servi (`code_servi.sha` = `ba6a8f0`, l'écart entre les deux étant de la
 documentation seule, `git diff --stat`).
 
 **Le nom de champ externe est lu à 7 lignes, 6 fonctions, 3 fichiers, 2 sources**
-(`git grep` sur `props.get|meta.get|row.get|minio_url AS|.minio_url !=`) :
+(`git grep` sur `props.get|meta.get|row.get|<ancien champ de l'URL> AS|.<ancien champ de l'URL> !=`) :
 graphe — `graph_context.py:262, 607, 608, 643, 844` ; ChromaDB —
 `lexical.py:252`, `retriever.py:1572`.
 
 **La source réelle des images est le graphe, pas ChromaDB.** `media_object_names()`
-rend **212** objets ; sur les **4367** chunks de la collection, `minio_url` est
+rend **212** objets ; sur les **4367** chunks de la collection, `<ancien champ de l'URL>` est
 présent partout et **non vide sur 4** (balayage exhaustif, contrôle positif sur
 `filename`).
 
@@ -10084,14 +10084,14 @@ Donc `media_object_names()` rendrait un ensemble **vide**, et comme
 **toutes** les images, pas seulement celles du champ perdu.
 
 **Le SDK émet une opération S3 que notre source ne nomme pas.** Trace de
-`Minio._url_open` sur un client neuf : `GET /documents?location=`
+`_url_open` de la classe cliente sur un client neuf : `GET /documents?location=`
 (*GetBucketLocation*) **avant** le `GetObject`. Le pipeline utilise le même SDK
-`minio==7.2.20` : chez lui elle précède le premier `put_object`, donc une
+la bibliothèque cliente S3 7.2.20 : chez lui elle précède le premier `put_object`, donc une
 passerelle qui ne la sert pas casse **l'ingestion**, pas l'affichage. Retenue
 par le pipeline comme **premier critère éliminatoire** de son essai.
 
 **La forme de l'URL est décodée par position, à deux endroits, avec deux règles
-différentes** — `minio_client.object_name_from_url` (urlparse, retire le premier
+différentes** — `stockage_objet.object_name_from_url` (urlparse, retire le premier
 segment) et `graph_context.media_object_names` (`split("/", 4)`, exige 5 parts).
 Banc de sept formes exécuté sur le vrai code : seule
 `scheme://host[:port]/<bucket>/<objet>` est correcte. Le virtual-host style et
@@ -10100,7 +10100,7 @@ chemin relatif ou une clé nue font **diverger** les deux décodeurs. Aucun des
 sept cas ne lève.
 
 **Ce que le pipeline a accordé**, écrit ici parce que le dépôt survit, pas la
-conversation : `minio_url` → **`media_url`** (même forme path-style, garantie
+conversation : `<ancien champ de l'URL>` → **`media_url`** (même forme path-style, garantie
 maintenue) et un champ nouveau **`object_key`** portant la clé d'objet nue. Pas
 de champ `bucket` : c'est un réglage, `documents`, que nous avons déjà. Le
 principe retenu des deux côtés : **on ne nomme pas le produit dans le contrat** —
@@ -10135,16 +10135,16 @@ positionnels, donc la totalité de notre exposition à la forme de l'URL.
   nGQL n'est pas du Python, et aucune n'est disponible. Une **mutation
   survivante** a été trouvée et **fermée** en cours de lot : le contrôle positif
   du relevé ne portait aucun témoin de la nature `subscript`, de sorte qu'un
-  site écrit `meta["minio_url"]` serait resté invisible si le relevé perdait
+  site écrit `meta["<ancien champ de l'URL>"]` serait resté invisible si le relevé perdait
   cette nature — `rc(pytest)=0`, 18 passés sous la double mutation. Le contrôle
   porte désormais sur les **trois** natures, sur un fragment **synthétique**, et
   une garde exige qu'aucune nature de l'inventaire ne reste sans témoin ;
 - **`/health` ne sonde pas le stockage objet.** `services` vaut
   `{chromadb, nebulagraph, index_lexical, llm}` ; `main.py:1178-1187` ne
-  construit aucun `minio_ping`. Une panne du stockage laisse la santé **verte**,
+  construit aucun ping du stockage objet. Une panne du stockage laisse la santé **verte**,
   ce qui prive la bascule de son témoin le plus évident ;
 - **l'alphabet des chemins d'objets.** `_OBJECT_NAME_RE = ^[\w\-./]+$`
-  (`minio_client.py:13`) : ni espace, ni `%`, ni `+`, ni `:`, ni parenthèse. Le
+  (`stockage_objet.py:13`) : ni espace, ni `%`, ni `+`, ni `:`, ni parenthèse. Le
   pipeline s'engage à ne pas changer la normalisation à la réingestion.
 
 **La réserve 3 du pipeline sur `sequence` est déjà fermée chez nous**, et
@@ -10177,7 +10177,7 @@ existe et est propre.
 - **La bonne fonction n'était pas `is_allowed`.** Elle teste l'appartenance à
   l'ensemble tiré du graphe : les 212 y sont **par construction**, donc son
   échec est trivialement 0 et ne mesure rien. Le garde qui mord est
-  `_OBJECT_NAME_RE` dans `get_object_bytes` (`minio_client.py:85`).
+  `_OBJECT_NAME_RE` dans `get_object_bytes` (`stockage_objet.py:85`).
 - **Le cas redouté a été rencontré, pas évité.** Le corpus contient bien
   « 4. Model Serving：… », avec le deux-points pleine chasse, dans **2** des 45
   valeurs de `filename`/`source_path` ; et **42** de ces 45 portent un caractère
@@ -10235,9 +10235,9 @@ réponse est non, et elle est `mesurée` le 22 septembre 2026 sur `2010dbe` :
 
 - **aucune écriture S3 nulle part.** `git grep` de `put_object|remove_object|make_bucket|presigned`
   sur `src/`, `tests/` et `scripts/` → aucun appel. Le seul appel de production
-  est `get_object` (`minio_client.py:96`) ;
+  est `get_object` (`stockage_objet.py:96`) ;
 - **aucun test ne parle à un endpoint réel** : les neuf sites de `test_resilience.py`
-  et `test_securite.py` remplacent tous `_get_minio_client` par un double.
+  et `test_securite.py` remplacent tous `_get_client_s3` par un double.
 
 **CONDITION 1 — `GetBucketLocation` doit être dans la politique.** Le SDK
 l'émet une fois par client avant tout `GetObject` (§4.62). Une politique
@@ -13283,10 +13283,10 @@ média avant la bascule SeaweedFS.
 → **HTTP 404** `{"detail":"Objet introuvable."}`. Le journal du conteneur dit
 pourquoi :
 
-    nGQL échoué : MATCH (n:Picture) WHERE n.Picture.minio_url != "" … — SemanticError: `Picture': Unknown tag
-    nGQL échoué : MATCH (n:Table) WHERE n.Table.minio_url != "" … — SemanticError: `Table': Unknown tag
+    nGQL échoué : MATCH (n:Picture) WHERE n.Picture.<ancien champ de l'URL> != "" … — SemanticError: `Picture': Unknown tag
+    nGQL échoué : MATCH (n:Table) WHERE n.Table.<ancien champ de l'URL> != "" … — SemanticError: `Table': Unknown tag
     Proxy média : 0 objets autorisés.
-    Objet MinIO non référencé par le graphe : images/…/086f1173cb_picture.png
+    Objet [l'ancien stockage objet] non référencé par le graphe : images/…/086f1173cb_picture.png
 
 La liste blanche du proxy (`media_object_names()`, `src/agent/graph_context.py`)
 se lit par `MATCH` sur les tags `Picture` et `Table`. **La session NebulaGraph que
@@ -13314,7 +13314,7 @@ mesuré.
 pour la bascule SeaweedFS, a ouvert une session neuve : `Proxy média : 212
 objets autorisés.`, puis le même `GET /media/…` → **HTTP 200**, **9 986 octets**,
 SHA-256 `9cc9c4ed283e3c9a…`, identique aux octets lus avant la bascule dans
-l'ancien MinIO. **Le défaut reviendra à la prochaine purge du pipeline**, tant
+l'ancien stockage objet. **Le défaut reviendra à la prochaine purge du pipeline**, tant
 que le code ne réagit pas à un `SemanticError` en rouvrant sa session.
 
 **QUESTION OUVERTE, À TRANCHER PAR UN LOT DE `src/`** : sur un `SemanticError`
@@ -13395,7 +13395,7 @@ reprise.**
    et la justification de cette étroitesse : un `SemanticError` d'une autre
    nature est une faute de requête, que rouvrir une session ne soigne pas, et
    rejouer doublerait la charge sans aucune chance d'aboutir.
-2. `_allowed_objects` (`src/agent/minio_client.py`) **ne met plus en cache une
+2. `_allowed_objects` (`src/agent/stockage_objet.py`) **ne met plus en cache une
    liste blanche VIDE** — un vide est un symptôme, jamais un fait établi. Une
    liste pleine reste mise en cache : le proxy est sur le chemin de **chaque**
    image affichée.
@@ -13431,7 +13431,7 @@ est vert, la restauration est confrontée au SHA-256 d'avant, et le banc tourne
 |---|---|---|---|---|
 | **M1** la réouverture **retirée** (`return False and bool(…)`) | `graph_context.py` | `fa4cb539610ed148…` → `86bd0381db8081b2…` | **5** | `test_session_perimee_apres_purge.py` |
 | **M2** la réouverture **élargie** à toute erreur (`return True or bool(…)`) | `graph_context.py` | `fa4cb539610ed148…` → `4f550f9ac70a8828…` | **1** | idem |
-| **M3** le **cache du vide** rétabli (`if noms:` retiré) | `minio_client.py` | `f119c983f1378e18…` → `4ff2be7eb038e98d…` | **1** | idem |
+| **M3** le **cache du vide** rétabli (`if noms:` retiré) | `stockage_objet.py` | `f119c983f1378e18…` → `4ff2be7eb038e98d…` | **1** | idem |
 | **M4** la **sonde de tag** retirée (`return True`) | `graph_context.py` | `fa4cb539610ed148…` → `c1239fcad4464d76…` | **2** | idem |
 | **T** **témoin inerte** : 13 lignes vides en tête | `graph_context.py` | `fa4cb539610ed148…` → `10616cae676566eb…` | **0** | — |
 
@@ -13466,19 +13466,19 @@ réel**, là où il ne la voyait pas du tout. Et le service du port 8011 tourne
 encore sur l'image d'avant ce lot : **la prochaine purge le trouvera inchangé
 tant que le conteneur n'est pas reconstruit**.
 
-### 4.82 → LOT-42 : `media_url` et `object_key`, avec repli sur `minio_url` — l'étape 1 de la sortie de MinIO
+### 4.82 → LOT-42 : `media_url` et `object_key`, avec repli sur `<ancien champ de l'URL>` — l'étape 1 de la sortie de l'ancien stockage objet
 
 **LE CONTRAT QUI CHANGE**, décidé avec `rag-ingestion-pipeline` et précisé par
-son message 45. La propriété publiée `minio_url` devient `media_url`, dans le
+son message 45. La propriété publiée `<ancien champ de l'URL>` devient `media_url`, dans le
 graphe NebulaGraph ET dans les métadonnées des chunks ChromaDB, même forme
 path-style. Une propriété nouvelle, `object_key`, porte la clé nue de l'objet.
 Les `element_id` ne bougent pas, le bucket reste `documents`. **Il n'y a que
 DEUX états, jamais les deux champs ensemble :**
 
-- **AVANT** (aujourd'hui) : `Picture` et `Table` portent `minio_url` ;
+- **AVANT** (aujourd'hui) : `Picture` et `Table` portent `<ancien champ de l'URL>` ;
   `media_url` et `object_key` **n'existent pas** dans leur schéma ;
 - **APRÈS** : la purge fait `DROP SPACE`, puis `CREATE TAG` sans `ALTER`.
-  `Picture` et `Table` portent `media_url` et `object_key` ; `minio_url`
+  `Picture` et `Table` portent `media_url` et `object_key` ; `<ancien champ de l'URL>`
   **n'existe plus** dans le schéma, même vide. ChromaDB suit le même mouvement.
 
 Notre version servie traverse les deux : elle doit donc lire l'un **et**
@@ -13496,15 +13496,15 @@ les images. `mesuré` le 25 septembre 2026 à **12:43:43**, **12:44:06** et
 
 | Requête | Résultat |
 |---|---|
-| `DESCRIBE TAG Picture` / `Table` | 6 champs : `label`, `page_no`, `page_no_end`, `text`, `minio_url`, `depth` — **ni `media_url` ni `object_key`** |
-| `WHERE n.Picture.minio_url != ""` → `count` (contrôle positif) | **209** ; `Table` : **3** |
+| `DESCRIBE TAG Picture` / `Table` | 6 champs : `label`, `page_no`, `page_no_end`, `text`, `<ancien champ de l'URL>`, `depth` — **ni `media_url` ni `object_key`** |
+| `WHERE n.Picture.<ancien champ de l'URL> != ""` → `count` (contrôle positif) | **209** ; `Table` : **3** |
 | `WHERE n.Picture.<propriété inexistante> != ""` → `count` | `succeeded=True`, **0** |
 | `RETURN n.Picture.<propriété inexistante>` | `succeeded=True`, `__NULL__` |
 | `RETURN n.Picture.media_url, n.Picture.object_key` | `succeeded=True`, `__NULL__`, `__NULL__` |
-| `WHERE …media_url != "" OR …minio_url != "" OR …object_key != ""` (la forme retenue) | `succeeded=True`, **209** ; `Table` : **3** |
-| `WHERE …<inexistante> != "" OR …minio_url != ""`, puis dans l'ordre inverse | **209** et **209** ; `Table` : **3** et **3** |
+| `WHERE …media_url != "" OR …<ancien champ de l'URL> != "" OR …object_key != ""` (la forme retenue) | `succeeded=True`, **209** ; `Table` : **3** |
+| `WHERE …<inexistante> != "" OR …<ancien champ de l'URL> != ""`, puis dans l'ordre inverse | **209** et **209** ; `Table` : **3** et **3** |
 | `WHERE …<inexistante> != "" OR …media_url != "" OR …object_key != ""` | **0** — le `OR` n'invente rien |
-| `GO … YIELD properties($$).minio_url` / `.<inexistante>` | `succeeded=True` ; `""` / `__NULL__` |
+| `GO … YIELD properties($$).<ancien champ de l'URL>` / `.<inexistante>` | `succeeded=True` ; `""` / `__NULL__` |
 
 **Une propriété absente du schéma d'un tag EXISTANT ne fait pas échouer la
 requête** : elle rend `__NULL__`, son `!= ""` n'est pas vrai, et un `OR` est vrai
@@ -13514,11 +13514,11 @@ fait échouer un `MATCH` (§4.81) — et `Picture` comme `Table` existent dans l
 deux états. **L'état APRÈS n'a pas pu être mesuré tel quel** : il exige un
 `CREATE TAG` sur le graphe partagé, qu'on ne touche pas. Il est rejoué par une
 propriété inexistante d'un tag existant, qui est exactement la situation de
-`minio_url` après la purge.
+`<ancien champ de l'URL>` après la purge.
 
 **LES SITES, RELEVÉS PAR MOTIF.** Par le releveur AST de
 `tests/unit/test_contrat_champs_externes.py`, jamais par numéro de ligne. Base
-`b70ac8c` : **7** lectures de `minio_url`, **0** de `media_url` et d'`object_key`.
+`b70ac8c` : **7** lectures de `<ancien champ de l'URL>`, **0** de `media_url` et d'`object_key`.
 Lot : **7 motifs**, **8** lectures de CHAQUE nom, **24** en tout :
 
 | Motif (fonction, nature) | Fichier | par nom |
@@ -13533,13 +13533,13 @@ Lot : **7 motifs**, **8** lectures de CHAQUE nom, **24** en tout :
 
 Le zéro est doublé : `git grep -nE 'media_url|object_key' -- src/ ':!src/agent/'`
 ne rend que les deux déclarations `object_key` de `src/api/schemas.py`, et le
-même motif sur `minio_url` y retrouve bien les 3 + 1 lignes de NOTRE contrat de
+même motif sur `<ancien champ de l'URL>` y retrouve bien les 3 + 1 lignes de NOTRE contrat de
 réponse ; `scripts/`, `Makefile` et `docker-compose.yml` ne portent aucun des
 trois noms, pour un motif qui y trouve `chroma` dans trois fichiers.
 
-**LE DIFF DE `src/`.** Chaque site lit `media_url`, puis `minio_url` à défaut,
+**LE DIFF DE `src/`.** Chaque site lit `media_url`, puis `<ancien champ de l'URL>` à défaut,
 et `object_key`. La clé d'objet passe par une fonction unique,
-`minio_client.cle_objet(object_key, url)` : `object_key` s'il est publié, sinon
+`stockage_objet.cle_objet(object_key, url)` : `object_key` s'il est publié, sinon
 `object_name_from_url`. **La liste blanche l'emploie aussi**, et c'est un
 changement de règle : elle décodait l'URL par `split("/", 4)`, le chemin `/media`
 par `urlparse` — les deux décodeurs divergents du §4.62. Il n'en reste qu'un, et
@@ -13547,8 +13547,8 @@ par `urlparse` — les deux décodeurs divergents du §4.62. Il n'en reste qu'un
 `SectionElement` portent un champ `object_key` **exclu de la sérialisation** :
 notre réponse ne change pas de forme. `resolve_citations` calcule le chemin
 `/media` au moment où l'élément porte encore sa clé. **Rien d'autre n'est
-renommé** : ni les variables `MINIO_*`, ni `minio_client.py`, ni le champ
-`minio_url` de notre API vers le frontend — c'est l'étape 3, après la
+renommé** : ni les variables `S3_*`, ni `stockage_objet.py`, ni le champ
+`<ancien champ de l'URL>` de notre API vers le frontend — c'est l'étape 3, après la
 réingestion.
 
 **LA GARDE DU LOT 29, RETOURNÉE ET NON CONTOURNÉE.** Elle est décrite au §4.62
@@ -13568,7 +13568,7 @@ servie, chunk lexical, chunk dense), les propriétés d'un sommet dans les deux
 états et sans champ, les deux chunks sans champ, la priorité d'`object_key`,
 `to_media_path` avec clé, la non-fuite dans l'API, deux gardes du contrat, et
 les six contrôles positifs retournés de la garde du lot 29 — `media_url` à B1,
-B2 et B3 (lexical et dense), `minio_url` et `object_key` à B1 : 13 + 2 + 6. Les verts sont l'état AVANT, que
+B2 et B3 (lexical et dense), `<ancien champ de l'URL>` et `object_key` à B1 : 13 + 2 + 6. Les verts sont l'état AVANT, que
 la base lisait déjà, et les scènes de `test_session_perimee_apres_purge.py`.
 Sur l'arbre du lot : **61 verts**, `rc(pytest)=0`, à 12:50:56 UTC.
 
@@ -13581,10 +13581,10 @@ au SHA-256 d'avant — vraie sur les 27 passes, arbres propres à la fin.
 
 | Mutation | Fichier | SHA-256 avant → après | Rouges | Ce qui a rougi, hors garde d'inventaire |
 |---|---|---|---|---|
-| **M1a** repli `minio_url` retiré — sommet | `graph_context.py` | `7a5e692f54fdd161…` → `296acf1fd68bb0ce…` | 3 | propriétés du sommet, AVANT |
-| **M1b** repli retiré — colonnes de la liste blanche | idem | → `e2e3465aae9e6aa9…` | 9 | liste blanche, image servie, chunks servis (AVANT) ; B1 `minio_url` ; deux gardes de `test_session_perimee_apres_purge.py` |
+| **M1a** repli `<ancien champ de l'URL>` retiré — sommet | `graph_context.py` | `7a5e692f54fdd161…` → `296acf1fd68bb0ce…` | 3 | propriétés du sommet, AVANT |
+| **M1b** repli retiré — colonnes de la liste blanche | idem | → `e2e3465aae9e6aa9…` | 9 | liste blanche, image servie, chunks servis (AVANT) ; B1 `<ancien champ de l'URL>` ; deux gardes de `test_session_perimee_apres_purge.py` |
 | **M1c** repli retiré — `WHERE` de la liste blanche | idem | → `14571d4d086d00d7…` | 6 | liste blanche, image servie, chunks servis (AVANT) |
-| **M1d** repli retiré — `_to_elements` | idem | → `e57a5ce7a82ff0db…` | 5 | citation avec image, image servie (AVANT) ; B2 `minio_url` |
+| **M1d** repli retiré — `_to_elements` | idem | → `e57a5ce7a82ff0db…` | 5 | citation avec image, image servie (AVANT) ; B2 `<ancien champ de l'URL>` |
 | **M1e** repli retiré — colonne du `GO` des enfants | idem | → `0a46d0d53ba84ee7…` | 4 | citation avec image, image servie (AVANT) |
 | **M1f** repli retiré — lexical | `lexical.py` | `a8e81dd3442652e7…` → `c7c662df9ccacbe8…` | 4 | chunk lexical servi (AVANT) ; B3 lexical |
 | **M1g** repli retiré — dense | `retriever.py` | `4b1618e031b414e4…` → `d062f83dfd936f07…` | 4 | chunk dense servi (AVANT) ; B3 dense |
@@ -13595,7 +13595,7 @@ au SHA-256 d'avant — vraie sur les 27 passes, arbres propres à la fin.
 | **M2e** `media_url` retiré — colonne du `GO` | idem | → `d14b8827b01cfc72…` | 5 | citation avec image, image servie (APRÈS) ; priorité d'`object_key` |
 | **M2f** `media_url` retiré — lexical | `lexical.py` | `a8e81dd3442652e7…` → `81533514077cb078…` | 5 | chunk lexical servi (APRÈS) ; B3 lexical ; non-fuite dans l'API |
 | **M2g** `media_url` retiré — dense | `retriever.py` | `4b1618e031b414e4…` → `f5b8ae44891b660b…` | 4 | chunk dense servi (APRÈS) ; B3 dense |
-| **M3a** `object_key` ignoré — `cle_objet` | `minio_client.py` | `b85158e7bcba3854…` → `9dd8b4b4bfefa7d2…` | 3 | priorité d'`object_key` ; `to_media_path` avec clé ; B1 `object_key` |
+| **M3a** `object_key` ignoré — `cle_objet` | `stockage_objet.py` | `b85158e7bcba3854…` → `9dd8b4b4bfefa7d2…` | 3 | priorité d'`object_key` ; `to_media_path` avec clé ; B1 `object_key` |
 | **M3b** `object_key` ignoré — colonnes de la liste blanche | `graph_context.py` | `7a5e692f54fdd161…` → `8440d267f747de8f…` | 4 | priorité d'`object_key` ; B1 `object_key` |
 | **M3c** `object_key` ignoré — `_to_elements` | idem | → `758edc9cd69c289c…` | 3 | priorité d'`object_key` |
 | **M3d** `object_key` ignoré — sommet | idem | → `7175d1524a3dad19…` | 3 | propriétés du sommet, APRÈS |
@@ -13630,17 +13630,48 @@ comme M3e resteraient attrapées par l'inventaire, qui exige chaque nom à chaqu
 motif.
 
 **M1a, M2a ET M3d NE SONT TUÉES QUE PAR LA SCÈNE DIRECTE de
-`_get_node_properties`.** Les clés `minio_url` et `object_key` du dictionnaire
+`_get_node_properties`.** Les clés `<ancien champ de l'URL>` et `object_key` du dictionnaire
 qu'elle rend n'ont **aucun consommateur** dans `src/` : c'est une lecture du
 store, tenue au contrat comme les autres, mais sans conséquence visible pour le
 lecteur aujourd'hui.
 
 **CE QUE CE LOT NE PROUVE PAS.** *(a)* L'état APRÈS sur le graphd RÉEL : il
 exige un `CREATE TAG` sur le graphe partagé, et il est rejoué par une propriété
-inexistante d'un tag existant — la situation exacte de `minio_url` après la
+inexistante d'un tag existant — la situation exacte de `<ancien champ de l'URL>` après la
 purge, mais pas la purge elle-même. *(b)* Le service : le conteneur du port 8011
 tourne sur l'image d'avant ce lot, et **la réingestion de ce soir le
 trouverait inchangé** — sans la reconstruction de l'image, la liste blanche de
 l'état APRÈS serait vide et le proxy refuserait toutes les images. *(c)* La
 forme de la métadonnée ChromaDB d'après la réingestion : elle est prise au mot
 du pipeline (message 45), non relevée sur une collection réingérée.
+
+### 4.83 → LOT-43 : zéro trace du nom de l'ancien stockage objet — l'étape 3
+
+**LA DÉCISION DU PROPRIÉTAIRE.** Plus aucune trace du nom de l'ancien stockage
+objet, nulle part dans le dépôt : code, tests, configuration, documentation,
+historique compris. Seule exception : la bibliothèque cliente S3 qui porte ce
+nom — son nom de paquet dans `requirements.txt`, `pyproject.toml` et `uv.lock`,
+et son import à UN SEUL site du code, `src/agent/stockage_objet.py`, qui la
+rebaptise aussitôt `ClientS3`. Le stockage objet est SeaweedFS, servi en S3.
+La réingestion du pipeline a retiré l'ancien champ de l'URL des deux stores :
+le graphe et ChromaDB ne portent plus que `media_url` et `object_key`.
+
+**LA TABLE DE PASSAGE DU `.env`, À APPLIQUER AU DÉPLOIEMENT.** `settings.py` ne
+relit PAS les anciens noms, et `extra="ignore"` les laisse passer sans un mot :
+un `.env` non migré démarre, avec une clé d'accès vide et le point d'accès par
+défaut, et le proxy `/media` ne sert plus aucune image. Les valeurs ne changent
+pas, seuls les noms. Cette table est la SEULE zone du dépôt autorisée à nommer
+les anciennes variables, et la garde du §4.83 la tolère, elle seule.
+
+<!-- migration-du-lot-43:début — seule zone du dépôt tolérée par tests/unit/test_zero_trace_du_nom_retire.py -->
+| Ancien nom (`.env` d'avant le lot 43) | Nouveau nom | Valeur |
+|---|---|---|
+| `MINIO_ENDPOINT` | `S3_ENDPOINT` | inchangée |
+| `MINIO_ROOT_USER` | `S3_ACCESS_KEY` | inchangée (jeu lecture seule du pipeline) |
+| `MINIO_ROOT_PASSWORD` | `S3_SECRET_KEY` | inchangée (jeu lecture seule du pipeline) |
+| `MINIO_BUCKET` | `S3_BUCKET` | inchangée |
+| `MINIO_SECURE` | `S3_SECURE` | inchangée |
+
+Geste, dans le clone principal, sans afficher aucune valeur, puis contrôle (`0` attendu) :
+`sed -i -e 's/^MINIO_ENDPOINT=/S3_ENDPOINT=/' -e 's/^MINIO_ROOT_USER=/S3_ACCESS_KEY=/' -e 's/^MINIO_ROOT_PASSWORD=/S3_SECRET_KEY=/' -e 's/^MINIO_BUCKET=/S3_BUCKET=/' -e 's/^MINIO_SECURE=/S3_SECURE=/' .env && grep -c '^MINIO_' .env`
+<!-- migration-du-lot-43:fin -->
