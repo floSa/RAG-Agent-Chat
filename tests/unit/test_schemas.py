@@ -1,12 +1,18 @@
+import ast
+from pathlib import Path
+
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from src.api.schemas import (
     ChatRequest,
     ChunkResult,
+    ImageRef,
     SearchRequest,
+    SectionElement,
     SourceSelectionRequest,
 )
+from tests.unit.test_contrat_champs_externes import CHAMP_URL_RETIRE
 
 
 def test_search_request_valid() -> None:
@@ -46,3 +52,69 @@ def test_chat_request_defaults() -> None:
     assert req.stream is True
     assert req.chat_history == []
     assert req.selected_element_ids == []
+
+
+# ─── LOT-43 : le nom que NOTRE API publie, et celui que le frontend lit ──────
+#
+# L'agent et le frontend sont déployés ENSEMBLE : le nom `media_url` est un
+# contrat entre eux deux. Il sort par DEUX chemins — la réponse FastAPI, qui
+# sérialise par alias, et le flux SSE, qui appelle `model_dump()` nu — et un
+# alias de sérialisation rendu à l'ancien nom ne changerait que le premier.
+# Nés des mutations M3b à M3e du §4.83, que seule la garde du nom attrapait.
+
+_URL_MEDIA = "/media/images/rapport/aaaaaaaa01_picture.png"
+
+
+def _modeles_qui_publient_l_url() -> list[BaseModel]:
+    return [
+        ImageRef(element_id="aaaaaaaa01", media_url=_URL_MEDIA),
+        ChunkResult(
+            chunk_id="aaaaaaaa01_part0",
+            element_id="aaaaaaaa01",
+            graph_node_id="aaaaaaaa01",
+            document="Figure.",
+            filename="rapport.pdf",
+            page_no=1,
+            label="picture",
+            distance=0.1,
+            media_url=_URL_MEDIA,
+        ),
+        SectionElement(
+            node_id="aaaaaaaa01", label="picture", text="", sequence=0, media_url=_URL_MEDIA
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "modele", _modeles_qui_publient_l_url(), ids=lambda m: type(m).__name__
+)
+def test_notre_api_publie_l_url_sous_media_url_par_les_deux_chemins(modele: BaseModel) -> None:
+    for par_alias in (False, True):
+        publie = modele.model_dump(by_alias=par_alias)
+        assert publie.get("media_url") == _URL_MEDIA, (type(modele).__name__, par_alias, publie)
+        assert CHAMP_URL_RETIRE not in publie
+    schema = type(modele).model_json_schema(by_alias=True)["properties"]
+    assert "media_url" in schema and CHAMP_URL_RETIRE not in schema
+
+
+def test_le_frontend_lit_les_images_sous_les_noms_que_l_api_publie() -> None:
+    """Les clés que `src/frontend/app.py` lit sur une image, relevées par AST.
+
+    Elles doivent toutes être publiées par `ImageRef`, et `media_url` doit en
+    être : un frontend qui relirait l'ancien nom afficherait des réponses sans
+    une image, sans une erreur. `element_id` est le témoin du releveur.
+    """
+    source = (Path(__file__).resolve().parents[2] / "src" / "frontend" / "app.py").read_text()
+    lues = {
+        n.slice.value
+        for n in ast.walk(ast.parse(source))
+        if isinstance(n, ast.Subscript)
+        and isinstance(n.value, ast.Name)
+        and n.value.id == "img"
+        and isinstance(n.slice, ast.Constant)
+        and isinstance(n.slice.value, str)
+    }
+    assert "element_id" in lues, f"le releveur ne voit plus les lectures d'image : {lues}"
+    publiees = set(ImageRef.model_json_schema(by_alias=True)["properties"])
+    assert "media_url" in lues, lues
+    assert lues <= publiees, f"le frontend lit {sorted(lues - publiees)}, que l'API ne publie pas"
