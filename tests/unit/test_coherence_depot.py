@@ -291,6 +291,9 @@ class TestAucuneRecetteNeResynchroniseLEnvironnement:
             for relatif in _fichiers_suivis()
             if relatif.startswith("documentation/")
             and not _est_du_code(relatif)
+            # Un récit est un TEXTE : les captures d'écran du manuel utilisateur
+            # (documentation/manuel/*.png) ne racontent rien et ne se décodent pas.
+            and relatif.endswith(".md")
             and _INVOCATION_NUE.search((_RACINE / relatif).read_text(encoding="utf-8"))
         ]
 

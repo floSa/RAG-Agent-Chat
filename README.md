@@ -15,13 +15,14 @@ Version livrée : étiquette git `v1.1.0`. Chaque commande de ce document a ét�
 
 ## Reprendre le projet
 
-1. **Lire l'état et la suite** : [etat_du_projet.md](documentation/etat_du_projet.md) (ce qui marche, avec ses mesures), puis [prochaines_etapes.md](documentation/prochaines_etapes.md) (les questions ouvertes, ordonnées par le coût de l'échec).
-2. **Savoir où vivent les chiffres** : chaque mesure a un site canonique, une section du registre [axes_amelioration.md](documentation/axes_amelioration.md) ou une ligne du journal [pilotage_du_chantier.md](documentation/pilotage_du_chantier.md). Corriger le registre en ajoutant, daté, jamais en effaçant ; les rapports de [audits/](documentation/audits/README.md) ne se réécrivent pas.
-3. **Monter l'environnement de mesure** par la [porte qualité](#porte-qualité), dans un arbre neuf, jamais dans le `.venv` d'un autre travail.
-4. **Armer les garde-fous git** par `make install`, depuis le clone principal seulement : identité d'auteur autorisée, aucune attribution, porte avant la poussée.
-5. **Configurer** : le `.env` vit dans le clone principal ([Lancer](#lancer)).
-6. **Vérifier les stores avant toute mesure** : `make verifier-les-ancrages`, puis `POST /reindex` après chaque réingestion du pipeline.
-7. **Déployer** par la marche du §4 de [identite_du_code_servi.md](documentation/identite_du_code_servi.md) : étiqueter l'image servie avant de construire, puis vérifier `code_servi` dans `/health`.
+1. **Voir l'application à l'œuvre** : [manuel_utilisateur.md](documentation/manuel_utilisateur.md), trois cas d'usage illustrés.
+2. **Lire l'état et la suite** : [etat_du_projet.md](documentation/etat_du_projet.md) (ce qui marche, avec ses mesures), puis [prochaines_etapes.md](documentation/prochaines_etapes.md) (les questions ouvertes, ordonnées par le coût de l'échec).
+3. **Savoir où vivent les chiffres** : chaque mesure a un site canonique, une section du registre [axes_amelioration.md](documentation/axes_amelioration.md) ou une ligne du journal [pilotage_du_chantier.md](documentation/pilotage_du_chantier.md). Corriger le registre en ajoutant, daté, jamais en effaçant ; les rapports de [audits/](documentation/audits/README.md) ne se réécrivent pas.
+4. **Monter l'environnement de mesure** par la [porte qualité](#porte-qualité), dans un arbre neuf, jamais dans le `.venv` d'un autre travail.
+5. **Armer les garde-fous git** par `make install`, depuis le clone principal seulement : identité d'auteur autorisée, aucune attribution, porte avant la poussée.
+6. **Configurer** : le `.env` vit dans le clone principal ([Lancer](#lancer)).
+7. **Vérifier les stores avant toute mesure** : `make verifier-les-ancrages`, puis `POST /reindex` après chaque réingestion du pipeline.
+8. **Déployer** par la marche du §4 de [identite_du_code_servi.md](documentation/identite_du_code_servi.md) : étiqueter l'image servie avant de construire, puis vérifier `code_servi` dans `/health`.
 
 ## Architecture
 
@@ -338,6 +339,7 @@ Le compte est celui que [tests.md](documentation/tests.md) annonce, et une garde
 | Fichier | À quoi il sert |
 |---|---|
 | [README.md](README.md) | Ce document : reprise, architecture, matériel, retours, lancement, porte |
+| [documentation/manuel_utilisateur.md](documentation/manuel_utilisateur.md) | Le manuel utilisateur : trois cas d'usage illustrés, et ce qui se passe derrière chaque réponse |
 | [documentation/etat_du_projet.md](documentation/etat_du_projet.md) | Ce qui marche et par quelle mesure, ce qui ne marche pas, les limites |
 | [documentation/prochaines_etapes.md](documentation/prochaines_etapes.md) | Les questions ouvertes, ordonnées par le coût de l'échec |
 | [documentation/architecture.md](documentation/architecture.md) | Le système : services, écritures, dépendances, décisions |
