@@ -1,4 +1,5 @@
 import ast
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -65,30 +66,31 @@ def test_chat_request_defaults() -> None:
 _URL_MEDIA = "/media/images/rapport/aaaaaaaa01_picture.png"
 
 
-def _modeles_qui_publient_l_url() -> list[BaseModel]:
-    return [
-        ImageRef(element_id="aaaaaaaa01", media_url=_URL_MEDIA),
-        ChunkResult(
-            chunk_id="aaaaaaaa01_part0",
-            element_id="aaaaaaaa01",
-            graph_node_id="aaaaaaaa01",
-            document="Figure.",
-            filename="rapport.pdf",
-            page_no=1,
-            label="picture",
-            distance=0.1,
-            media_url=_URL_MEDIA,
-        ),
-        SectionElement(
-            node_id="aaaaaaaa01", label="picture", text="", sequence=0, media_url=_URL_MEDIA
-        ),
-    ]
+# Des FABRIQUES, et non des instances : un objet construit à la collecte fait
+# tomber le fichier entier en erreur (`rc=2`, suite interrompue) le jour où le
+# champ change de nom, au lieu de rougir scène par scène — mutation M3a du §4.83.
+_FABRIQUES: dict[str, Callable[[], BaseModel]] = {
+    "ImageRef": lambda: ImageRef(element_id="aaaaaaaa01", media_url=_URL_MEDIA),
+    "ChunkResult": lambda: ChunkResult(
+        chunk_id="aaaaaaaa01_part0",
+        element_id="aaaaaaaa01",
+        graph_node_id="aaaaaaaa01",
+        document="Figure.",
+        filename="rapport.pdf",
+        page_no=1,
+        label="picture",
+        distance=0.1,
+        media_url=_URL_MEDIA,
+    ),
+    "SectionElement": lambda: SectionElement(
+        node_id="aaaaaaaa01", label="picture", text="", sequence=0, media_url=_URL_MEDIA
+    ),
+}
 
 
-@pytest.mark.parametrize(
-    "modele", _modeles_qui_publient_l_url(), ids=lambda m: type(m).__name__
-)
-def test_notre_api_publie_l_url_sous_media_url_par_les_deux_chemins(modele: BaseModel) -> None:
+@pytest.mark.parametrize("nom", list(_FABRIQUES))
+def test_notre_api_publie_l_url_sous_media_url_par_les_deux_chemins(nom: str) -> None:
+    modele = _FABRIQUES[nom]()
     for par_alias in (False, True):
         publie = modele.model_dump(by_alias=par_alias)
         assert publie.get("media_url") == _URL_MEDIA, (type(modele).__name__, par_alias, publie)
