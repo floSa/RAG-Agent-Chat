@@ -1,5 +1,8 @@
 # Le GPU sur les étages torch — ce qu'il rapporte, et ce qui n'a pas pu être mesuré
 
+> **Archive de mesures : récit de campagne daté.** Protocole, configuration et chiffres d'une campagne menée à la date du titre ; les artefacts sont dans [runs/](../../runs/). Les chiffres valent pour l'état des stores et du moteur de ce jour-là. Entrée : [l'index des campagnes](README.md) ou la carte du [README](../../README.md#carte-de-la-documentation).
+
+
 `mesuré` le **11 septembre 2026**, entre **14:25 et 14:30 UTC**, par le lot 11,
 sur l'agent en service (image `f4d488b447a6`, `torch 2.14.0+cu130`, carte
 **NVIDIA L4**, pilote 595.71.05 / CUDA 13.2).

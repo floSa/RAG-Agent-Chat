@@ -1,5 +1,8 @@
 # Reconstruction du lecteur en service — 10 septembre 2026
 
+> **Archive de mesures : récit de campagne daté.** Protocole, configuration et chiffres d'une campagne menée à la date du titre ; les artefacts sont dans [runs/](../../runs/). Les chiffres valent pour l'état des stores et du moteur de ce jour-là. Entrée : [l'index des campagnes](README.md) ou la carte du [README](../../README.md#carte-de-la-documentation).
+
+
 **Ce document est le SITE CANONIQUE des chiffres du lot 8.** Chaque chiffre porte
 sa commande, son heure UTC (`date -u` relevée avant chaque bloc) et son étiquette
 — `mesuré` (sortie d'un programme), `calculé` (dérivé, dérivation écrite),

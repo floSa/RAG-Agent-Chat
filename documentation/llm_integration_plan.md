@@ -1,5 +1,8 @@
 # Plan d'integration LLM / Agent RAG
 
+> **Document historique : le plan de conception écrit avant le projet.** Il n'est pas tenu à jour et l'implémentation en diverge ; le bandeau qui suit nomme les écarts. Pour l'état réel, lire [architecture.md](architecture.md). Entrée : la carte du [README](../README.md#carte-de-la-documentation).
+
+
 > **Document historique.** C'est le plan de conception écrit avant que le projet
 > existe. Il est conservé pour la trace des intentions, pas comme référence :
 > l'implémentation en diverge sur presque tous les points techniques.

@@ -1,5 +1,8 @@
 # Référence de la troncature du graphe, avant la bascule du stockage objet
 
+> **Archive de mesures : empreinte de référence.** Relevé pris avant une bascule, pour comparer l'état d'après. Les valeurs sont celles du jour du titre et ne se mettent pas à jour. Entrée : [etat_du_projet.md](../etat_du_projet.md), qui cite le verdict d'après la réingestion, ou la carte du [README](../../README.md#carte-de-la-documentation).
+
+
 `mesuré` le **23 septembre 2026 à 08:53–08:58 UTC**, contre le graphe et
 ChromaDB en service, base `main` = `46be5a8`, code servi `ba6a8f0`.
 

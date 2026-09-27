@@ -1,5 +1,8 @@
 # Campagnes — récits datés, versés après mesure
 
+> **Archive de mesures : index des récits de campagne.** Chaque fichier de ce répertoire raconte une campagne datée ; les artefacts JSON sont dans [runs/](../../runs/). Aucun récit ne se réécrit. Entrée : la carte du [README](../../README.md#carte-de-la-documentation).
+
+
 Chaque fichier de ce répertoire raconte une campagne de mesure menée à une date,
 avec son protocole et ses chiffres. Ils ne sont pas tenus à jour : leur valeur
 est d'être **le récit de ce qui a été mesuré ce jour-là**, opposable.

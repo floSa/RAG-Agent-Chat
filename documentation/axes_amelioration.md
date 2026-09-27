@@ -1,5 +1,8 @@
 # Axes d'amélioration — rag-agent-chat
 
+> **Archive de mesures : le registre du chantier.** Un constat par section numérotée (§1 et §1bis corrigés, §2 et §3 ouverts, §4 chantier ouvert le 3 septembre 2026), chacun avec sa date, sa commande et son chiffre. C'est le site canonique de chaque mesure : les documents vivants la citent par son numéro de section. Lire la section citée en entier, corrections datées comprises ; une correction s'ajoute, rien ne s'efface. Entrée : [etat_du_projet.md](etat_du_projet.md), qui renvoie ici section par section, ou la carte du [README](../README.md#carte-de-la-documentation).
+
+
 > **CE DOCUMENT EST UN REGISTRE DATÉ, ET SES CONSTATS NE SONT PAS RÉÉCRITS.**
 > Le moteur servi est **vLLM depuis le 17 septembre 2026**, et le lot 28 a retiré
 > le support de l'autre moteur du code. Les sections `## 1. Corrigé` et

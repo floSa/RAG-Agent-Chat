@@ -1,356 +1,93 @@
-# Architecture de rag-agent-chat
+# Architecture du système
 
-## Vue d'ensemble
+Le système vu de haut : ses services, ce qu'il écrit, comment il tient face aux services voisins, et les décisions qui lui donnent sa forme. Pour qui reprend le projet et doit savoir où chaque chose se passe.
 
-Agent RAG conversationnel qui consomme **en lecture seule** les stores produits
-par `rag-ingestion-pipeline` (ChromaDB, NebulaGraph, stockage objet) et génère les
-réponses avec un LLM servi par le projet `llm-service`. Le flux est orchestré
-par une machine à états LangGraph, avec deux points d'entrée : un flux
-interactif où l'utilisateur choisit ses sources, et un flux direct destiné à
-l'évaluation.
+Les schémas (architecture, chemin d'une question, déploiement) sont dans le [README](../README.md#architecture). Le détail de l'agent (nœuds, état, prompts, réglages) est dans [agent_architecture.md](agent_architecture.md).
 
-## Services Docker
+## Les services
 
-| Service   | Image / Build       | Port interne | Port hôte | Rôle                                 |
-|-----------|---------------------|--------------|-----------|--------------------------------------|
-| agent-api | Dockerfile.agent    | 8000         | 8011      | Backend FastAPI (LangGraph, SSE)     |
-| frontend  | Dockerfile.frontend | 8501         | 8506      | UI Streamlit                         |
+| Service | Conteneur | Build | Port hôte → conteneur | Réseaux | Rôle |
+|---|---|---|---|---|---|
+| `agent-api` | `rag-agent-api` | `Dockerfile.agent` (`python:3.12-slim`, torch `cu130`) | 8011 → 8000 | `rag_network`, `llm-net`, `internal` | API FastAPI, agent LangGraph, embedder et reranker sur GPU |
+| `frontend` | `rag-frontend` | `Dockerfile.frontend` | 8506 → 8501 | `internal` | Interface Streamlit ; démarre quand `agent-api` est `healthy` |
 
-**Aucun serveur d'inférence n'est embarqué.** Les LLM viennent du conteneur
-`vllm-central` du projet `llm-service`, **servi depuis le 17 septembre 2026**.
-Un serveur d'inférence vivait ici : il faisait doublon et retéléchargeait
-plusieurs gigaoctets d'un modèle déjà servi.
+Tout le reste est externe à ce dépôt :
 
-Trois réseaux :
+| Dépendance | Propriétaire | Réseau | Adresse vue de l'agent |
+|---|---|---|---|
+| ChromaDB, NebulaGraph, stockage objet S3 | `rag-ingestion-pipeline` | `rag_network`, externe | `chromadb:8000`, `graphd:9669`, `seaweedfs:8333` |
+| Serveur d'inférence vLLM | `llm-service`, équipe voisine | `llm-net`, externe | `vllm-central:8000` |
 
-- `rag_network` (externe, créé par `rag-ingestion-pipeline`) : accès aux stores
-  `chromadb:8000`, `graphd:9669`, `<hôte du stockage objet>:9000` ;
-- `llm-net` (externe, créé par `llm-service`) : accès à `vllm-central:8000` ;
-- `internal` (bridge) : frontend ↔ agent-api.
+Volumes : `rag_hf_cache` (poids de l'embedder et du cross-encoder, téléchargés au premier démarrage) et `rag_agent_state` (sessions et capture d'usage, deux fichiers SQLite). Le dossier `prompts/` est monté en lecture seule depuis le clone.
 
-Volumes : `rag_hf_cache` (modèles HuggingFace — embedding et cross-encoder,
-téléchargés au premier démarrage), `rag_agent_state` (sessions LangGraph **et
-base de capture d'usage** — deux fichiers SQLite dans le même volume).
+## Deux entrées dans le même graphe
 
-`checkpoints.sqlite` porte une table de plus que celles de LangGraph :
-`sessions_agent`, le registre de la purge. Elle vit là et pas ailleurs pour
-qu'un fichier de sessions effacé emporte son registre avec lui — voir
-« Purge durable des sessions » plus bas.
+L'agent est une machine à états LangGraph, compilée deux fois :
 
-## Machine à états LangGraph
+| Compilation | Interruption | Checkpointer | Routes |
+|---|---|---|---|
+| `agent_graph` | avant `await_source_selection` | SQLite | `/chat/start` puis `/chat/resume` |
+| `answer_graph` | aucune | aucun | `/answer` |
+
+Le flux interactif attend un humain et ne se rejoue pas en lot ; `answer_graph` existe pour que les campagnes d'évaluation puissent mesurer le système. `/chat/simple` contourne le graphe : il génère à partir de sources déjà choisies, sans recherche ni boucle agentique.
+
+## Ce que le service écrit
+
+### La capture d'usage
+
+`src/agent/usage.py` enregistre la question, le classement proposé, les sources retenues ou décochées, la réponse, les latences et l'appréciation. Le branchement appartient à l'API, pas au graphe : `/chat/start` sait ce qui a été proposé, `/chat/resume` ce qui a été retenu, et aucun nœud ne voit les deux.
 
 ```
-rewrite → retrieve → rerank ─┬─(1ʳᵉ passe)──→ await_source_selection ─→ reconstruct_context
-                             └─(itération)────────────────────────────────↗
-reconstruct_context → generate → postprocess ─┬─(recherche demandée & < max)─→ retrieve
-                                              └─(sinon)─→ END
+/chat/start  → graphe jusqu'à rerank → record_start          (1 ligne + N sources)
+/chat/resume → graphe jusqu'à END → dernier événement SSE → record_completion
+/answer      → graphe complet → record_start + record_completion  (endpoint = 'answer')
+/feedback    → record_feedback
 ```
 
-Le même graphe est compilé de deux façons :
+L'écriture de `/chat/resume` suit le dernier événement SSE ; aucun échec ne remonte ; le mode WAL est posé au démarrage. Schéma, vues et requêtes : [capture_usage.md](capture_usage.md).
 
-| Compilation   | Interruption | Checkpointer | Consommé par |
-|---------------|--------------|--------------|--------------|
-| `agent_graph`  | `interrupt_before=["await_source_selection"]` | SQLite | `/chat/start` + `/chat/resume` |
-| `answer_graph` | aucune       | aucun        | `/answer` |
+### Purge durable des sessions
 
-Le flux interactif attend un humain : il n'est pas rejouable en batch. C'est
-pourquoi `answer_graph` existe — sans lui, aucune campagne d'évaluation ne peut
-mesurer le système.
+Le checkpointer ne purge rien de lui-même. L'API garantit trois choses :
 
-## Flux de bout en bout
+- une session en attente de sélection survit au redémarrage de l'API, donc aucune purge n'a lieu pour cette seule raison ;
+- une session périmée finit par disparaître du disque, même créée avant le dernier redémarrage : le registre de la purge, table `sessions_agent`, vit dans `checkpoints.sqlite`, et les sessions présentes sans registre y sont adoptées au démarrage ;
+- le journal et `GET /health` (`sessions.purged`, `sessions.failures`) comptent les suppressions abouties, pas les candidates.
 
-1. **Réécriture** (`node_rewrite`) : la question de suivi est rendue autonome
-   avant d'être encodée. « Et comment la calcule-t-on ? » embarqué tel quel ne
-   retrouve rien. Sans historique, aucun appel au LLM.
-2. **Recherche** (`node_retrieve`) : recherche dense ChromaDB **et** BM25
-   lexical, chacun ramenant `FETCH_K` candidats, fusionnés par Reciprocal Rank
-   Fusion. Le dense rate ce qui ne se paraphrase pas — acronymes, noms propres,
-   références, chiffres.
-3. **Reranking** (`node_rerank`) : cross-encoder multilingue, déduplication par
-   `element_id` **avant** la troncature au top-K (plusieurs fenêtres d'un même
-   passage occupaient sinon plusieurs places).
-4. **Sélection** : interactive (l'utilisateur coche) ou automatique
-   (`AUTO_SELECT_TOP_K` mieux classés).
-5. **Reconstruction** (`node_reconstruct_context`) : remontée `PARENT_OF`
-   jusqu'au `Document` en notant les titres traversés, fenêtre d'éléments autour
-   de l'ancre, fin de la section précédente et début de la suivante, légendes
-   rattachées aux illustrations via `DESCRIBES`, texte intégral relu dans
-   l'index quand celui du graphe frôle sa troncature.
-6. **Génération** (`node_generate`) : `POST /v1/chat/completions` par le site
-   unique `dialecte_llm`, historique puis sources bornés au budget de fenêtre
-   avec un log, prompt estimé confronté au décompte réel, tokens streamés en SSE.
-7. **Post-processing** (`node_postprocess`) : citations `[src:ID]` résolues vers
-   document, ouvrage, page et section ; images `[img:ID]` servies par `/media`.
-   La résolution est restreinte à ce qui a été **réellement soumis** au modèle,
-   au grain de l'élément — les marqueurs du texte parti, pas les sections
-   candidates. Un identifiant écarté par le budget de fenêtre est refusé et
-   journalisé : le résoudre publiait une citation vers un passage jamais lu.
-8. **Boucle agentique** : si le modèle appelle l'outil `search_vectors`, une
-   nouvelle passe recherche → rerank → reconstruction s'enchaîne sans
-   re-sélection, contextes accumulés, dans la limite de `MAX_SEARCH_ITERATIONS`.
+Deux bornes la déclenchent, `SESSION_TTL_SECONDS` (3600) et `MAX_LIVE_SESSIONS` (200), au démarrage puis à chaque `POST /chat/start`. La session en cours de création est épargnée. L'âge se mesure à l'horloge murale, la seule qui survive à un redémarrage.
 
-## Capture d'usage
+Le registre n'est pas adossé à la capture d'usage, qui est désactivable : la purge ne dépend d'aucun autre réglage.
 
-`src/agent/usage.py` enregistre ce que le service sert : la question posée, le
-classement proposé, les sources retenues ou décochées, la réponse, les latences
-et l'appréciation. Détail du schéma et requêtes dans
-[capture_usage.md](capture_usage.md), posture dans [SECURITY.md](SECURITY.md).
+## Face aux services voisins
 
-**Le branchement appartient à l'API, pas au graphe**, et ce n'est pas un détail
-d'implémentation : c'est `/chat/start` qui sait ce qui a été **proposé** et
-`/chat/resume` qui sait ce qui a été **retenu**. Aucun nœud du graphe ne voit
-les deux. Un enregistrement couvre donc deux requêtes HTTP, jointes par
-`thread_id` — inséré au start, complété au resume.
-
-```
-/chat/start  ──→ graphe (rewrite → retrieve → rerank) ──→ record_start      (1 ligne + N sources)
-                                                              ↓ thread_id
-/chat/resume ──→ graphe (reconstruct → generate → postprocess)
-                 ──→ dernier événement SSE ──→ record_completion  (retenue, réponse, latences)
-/answer      ──→ graphe complet ──→ record_start + record_completion  (endpoint = 'answer')
-/feedback    ──→ record_feedback  (note binaire, commentaire libre)
-```
-
-Trois propriétés portées par le code, chacune pour une raison :
-
-- **l'écriture de `/chat/resume` a lieu après le dernier événement SSE** — la
-  diffusion est le chemin critique, et une écriture qui s'y glisse retarde une
-  réponse déjà lente ;
-- **aucun échec ne remonte** — base verrouillée, disque plein, schéma divergent :
-  WARNING et on continue de servir. La capture est de l'observation, pas une
-  fonctionnalité ;
-- **le mode de journalisation SQLite est fixé au démarrage** (`usage.initialiser`
-  appelé par le `lifespan`), jamais dans le chemin d'écriture : le changer exige
-  un verrou exclusif qui ne respecte pas le délai d'attente, et faisait perdre
-  des interactions simultanées.
-
-## Purge durable des sessions
-
-Le checkpointer ne purge rien de lui-même. Ce que l'API doit garantir, et ce
-qu'un lecteur doit pouvoir attendre :
-
-- **une session en attente de sélection survit au redémarrage de l'API.** C'est
-  la raison d'être du fichier ; aucune purge n'a lieu au démarrage pour cette
-  raison ;
-- **une session périmée finit par disparaître du disque, même si personne ne
-  l'a jamais vue vivante.** Le registre est sur disque, dans la base du
-  checkpointer : il survit au redémarrage. Les sessions présentes dans
-  `checkpoints` mais absentes du registre sont adoptées au démarrage — sans
-  quoi rien ne pouvait plus les atteindre ;
-- **ce que le journal annonce est ce qui a eu lieu.** La ligne de purge compte
-  les suppressions abouties, pas les candidates. Un échec sort en WARNING avec
-  sa trace, et `GET /health` publie `sessions.purged` et `sessions.failures` :
-  la purge est vérifiable sans lire les logs.
-
-Deux bornes la déclenchent, `SESSION_TTL_SECONDS` et `MAX_LIVE_SESSIONS`, et la
-purge tourne au démarrage puis à chaque `POST /chat/start`. La session en cours
-de création est épargnée : elle est inscrite avant que le graphe ne tourne, donc
-son horodatage précède le « maintenant » de la purge qui suit.
-
-L'horloge est celle du mur et non `time.monotonic` : c'est la seule qui survive
-à un redémarrage. Un compteur qui repart à zéro n'est pas un âge.
-
-## L'index lexical face à un corpus qui bouge
-
-L'ingestion est un service **séparé** : elle écrit dans ChromaDB pendant que
-l'agent tourne. La recherche dense le suit sans effort — la requête part à
-Chroma à chaque fois — mais l'index BM25 vit en mémoire dans le processus de
-l'agent. Ce qu'un lecteur doit attendre :
-
-- **un document ingéré après le démarrage devient trouvable en lexical**, sans
-  redémarrer l'agent. Deux mécanismes, et ils ne font pas double emploi :
-  `POST /reindex`, que l'ingestion appelle en fin de pipeline — un contrat — et
-  la comparaison de `collection.count()` au nombre de chunks indexés — un
-  filet, qui ne voit pas un corpus dont on a retiré autant de chunks qu'on en a
-  ajouté ;
-- **la reconstruction n'est pas payée par une requête utilisateur.** Elle coûte
-  le parcours du corpus entier (~9 s — chiffre **non mesuré**, réserve et protocole
-  en [axes_amelioration.md](axes_amelioration.md) §2). Déclenchée par le filet, elle tourne dans
-  un fil démon et l'index périmé continue de servir pendant ce temps ;
-  déclenchée par `/reindex`, elle est payée par le pipeline qui appelle ;
-- **`/health` ne déclare pas prêt un index périmé.** `index_lexical: false`
-  couvre les deux états dégradés — pas encore construit, et construit sur un
-  corpus disparu — parce qu'ils sont indistinguables pour l'utilisateur ;
-- **la première construction, elle, est toujours payée par la première
-  requête.** Ce n'est pas résolu, c'est arbitré : la déplacer au démarrage
-  retarderait la mise en service d'autant.
-
-Une seule construction a lieu même sous N requêtes concurrentes : la lecture du
-corpus est passée en rappel à `LexicalIndex.ensure`, qui l'exécute sous son
-verrou. Les endpoints de recherche étant des `def`, ils sont servis par le
-threadpool, et N requêtes arrivant avant que l'index soit prêt en déclenchaient
-N.
-
-**Limite connue en multi-workers :** `POST /reindex` ne reconstruit que l'index
-du processus qui reçoit la requête. Le contrat suppose aujourd'hui un worker
-unique ; les autres attendent leur filet.
+- **Un corpus qui bouge.** L'ingestion écrit pendant que l'agent tourne. La recherche dense suit ; l'index BM25 en mémoire est reconstruit par `POST /reindex`, que le pipeline appelle, ou par un filet de comptage ([stores.md](stores.md#lindex-bm25-vit-dans-le-processus-de-lagent)). Une reconstruction déclenchée par le filet tourne en tâche de fond, l'ancien index servant pendant ce temps ; une seule construction a lieu sous N requêtes concurrentes.
+- **Un store qui redémarre.** Les clients sont mémorisés et savent se rouvrir une fois ; une purge du graphe, qui rend la session NebulaGraph aveugle aux tags, est traitée de la même façon (§4.80 et §4.81 du [registre](axes_amelioration.md)).
+- **Un serveur d'inférence partagé.** L'agent ne l'administre pas. Il relève et publie ce qui est servi ([moteur_llm.md](moteur_llm.md)), borne ses prompts côté client ([llm.md](llm.md)), et partage la carte avec lui ([gpu_cuda.md](gpu_cuda.md)).
+- **Un `/health` sous délai.** Les sondes partent en parallèle sous un plafond de 3 s, pour tenir dans les 5 s du healthcheck Docker ; sinon le frontend, qui attend `agent-api` en `service_healthy`, ne démarrerait jamais.
 
 ## La partition du temps
 
-`AnswerResponse` ne portait que `retrieval_ms` et `generation_ms` : deux chiffres
-pour huit étages, dont celui qui n'avait **jamais** été chronométré — la
-reconstruction par le graphe, c'est-à-dire le pari central du projet. On ne peut
-pas arbitrer la suppression d'une étape dont on ignore le prix, et c'est la
-raison d'être de `src/agent/chronometrie.py`.
+`src/agent/chronometrie.py` tient une partition du temps de réponse par étage, publiée par `/answer` : la somme des étages et du résidu égale le temps mural, le résidu peut être négatif (trace d'un double comptage), un nom d'étage inconnu lève `KeyError`, et les étages se cumulent sur les tours de la boucle agentique. `retrieval_ms` est un agrégat, pas un étage. Liste des étages : [rag_evaluation_strategy.md](rag_evaluation_strategy.md#la-décomposition-du-temps). Le post-traitement des citations n'a pas d'étage propre et tombe dans le résidu.
 
-Le module tient une **partition**, pas une collection de compteurs. Ce qu'un
-lecteur doit attendre :
+## Les décisions d'architecture
 
-- **la somme des étages plus le résidu égale le temps mural.** `total_ms` est
-  mesuré autour de la traversée entière du graphe : c'est le seul chiffre qui ne
-  dépende d'aucune instrumentation interne, donc le seul contre lequel la
-  partition puisse être confrontée ;
-- **le résidu est publié, et il peut devenir négatif.** Il porte ce qu'aucun
-  étage ne réclame — l'ordonnancement de LangGraph, le post-traitement des
-  citations, l'assemblage de la réponse HTTP. Un résidu négatif est la **seule
-  trace observable** d'un double comptage : le borner à zéro effacerait
-  précisément ce qu'on cherche à voir. Un résidu large est en soi un résultat,
-  c'est du temps que personne ne sait expliquer ;
-- **`retrieval_ms` survit comme AGRÉGAT, pas comme étage.** Il est le temps
-  mural du nœud de recherche et contient `dense_ms`, `lexical_ms` et
-  `fusion_ms`. Il reste publié parce que la capture d'usage a une colonne de ce
-  nom et qu'`AnswerResponse` le porte depuis l'origine — mais l'ajouter à
-  `ETAGES` doublerait le comptage de tout l'étage de recherche. C'est le piège
-  que ce module existe pour fermer, donc il est nommé dans `AGREGATS` plutôt
-  que laissé à la sagacité du prochain lecteur ;
-- **un nom d'étage inconnu lève `KeyError`.** C'est délibérément brutal : un
-  étage mal nommé n'échoue pas, il *disparaît* — son temps tombe au résidu et la
-  table de latence continue de s'afficher comme si elle était complète ;
-- **l'accumulation est cumulative.** La boucle agentique repasse par la
-  recherche et par la génération ; ce qui compte pour arbitrer un étage est ce
-  qu'il coûte à la réponse entière, pas à son dernier passage. `cumuler` ajoute
-  au lieu d'écraser, l'état LangGraph étant remplacé nœud par nœud.
+- **Reconstruction par le graphe plutôt que chunks isolés** (*parent-document retrieval*) : le modèle reçoit la section, ses voisines et ses illustrations, chaque élément suivi de son marqueur `[src:ID]`.
+- **Le graphe porte la structure, l'index porte le texte** : l'ingestion tronque le texte des nœuds à 2000 caractères, l'agent relit le texte intégral dans ChromaDB.
+- **Fusion par RRF, pas par somme de scores** : une distance cosinus et un score BM25 ne vivent pas sur la même échelle ; RRF n'additionne que des rangs.
+- **Modèles multilingues des deux côtés** : le corpus mêle français et anglais, et un cross-encoder anglais rendait des scores plats sur une question française.
+- **Un seul moteur d'inférence, en dialecte OpenAI**, par un site unique (`src/agent/dialecte_llm.py`) : un champ d'un autre dialecte est accepté puis ignoré par le serveur, sans erreur.
+- **`LLM_NUM_CTX` borne le client** et n'est pas envoyé : la fenêtre du serveur est fixée à son lancement, et le serveur refuse en HTTP 400 une requête qui la dépasse.
+- **Le budget se calcule sur tout le prompt** (système, gabarit, historique, outil, sources), et l'estimation est confrontée au décompte du serveur à chaque génération.
+- **Appel d'outil natif, repli dans la prose** : `search_vectors` est déclaré comme outil ; le repérage d'un appel écrit dans le texte a un seul site, `src/agent/repli_outil.py`.
+- **Raisonnement désactivé par requête** (`LLM_THINKING=false` dans `chat_template_kwargs`), jamais côté serveur : le serveur est partagé avec d'autres équipes.
+- **Proxy `/media`** : le navigateur ne résout pas les adresses internes du stockage objet ; l'API sert les objets, chemin validé et borné au graphe.
+- **Sessions sur disque** (SQLite) : une session en attente de sélection survit au redémarrage.
+- **Les compteurs publiés comptent ce qui a abouti**, jamais ce qui a été tenté.
+- **VIDs échappés, pas filtrés** : les identifiants de documents dérivent d'un chemin et ne viennent jamais de l'utilisateur ; la validation stricte reste sur le seul format qu'un appelant fournit.
+- **Routes synchrones en `def`** : le calcul torch tourne dans le threadpool de FastAPI, la boucle d'événements reste libre.
+- **Embedder et cross-encoder sur GPU**, décision mesurée le 11 septembre 2026 ([gpu_cuda.md](gpu_cuda.md), §7). Trois conditions décident du périphérique, et `/health` les publie toutes.
+- **Capture d'usage active par défaut** : les premières semaines d'usage ne se rattrapent pas ([SECURITY.md](SECURITY.md)).
 
-`rewrite_ms` et `translation_ms` sont deux appels LLM distincts et se mesurent
-séparément : la traduction est un coût de la recherche translingue, la
-réécriture un coût des questions de suivi, et les deux s'arbitrent
-indépendamment.
+## Le contrat avec l'ingestion
 
-**Limite connue :** le post-traitement des citations n'a pas d'étage à lui et
-tombe donc dans le résidu — non nul, et non mesuré séparément. La restriction
-des citations aux éléments réellement soumis y ajoute un balayage de marqueurs
-par section soumise ; l'effet est consigné dans [runs/README.md](../runs/README.md)
-plutôt qu'appelé zéro.
-
-`scripts/evaluate.py` publie p50 **et** p95 par étage — une moyenne de latence
-cache la queue, et c'est la queue qui décide de l'expérience — et un test de
-cohérence tombe si sa liste d'étages s'écarte de celle de `chronometrie`.
-
-## Décisions d'architecture
-
-- **Reconstruction par le graphe** plutôt que chunks isolés : le LLM reçoit la
-  section, ses voisines et ses illustrations. C'est le pattern
-  *parent-document retrieval*.
-- **Le graphe porte la structure, l'index porte le texte.** L'ingestion tronque
-  le texte des nœuds à 2000 caractères ; le texte intégral est relu dans
-  ChromaDB pour les éléments qui frôlent cette limite. Un tableau Docling
-  dépasse souvent la limite et arrivait amputé.
-- **Recherche hybride fusionnée par RRF, pas par somme de scores** : une
-  distance cosine et un score BM25 ne vivent pas sur la même échelle. RRF
-  n'additionne que des rangs, ce qui rend la fusion insensible à la calibration
-  de chaque moteur.
-- **Modèles multilingues des deux côtés.** Le corpus mêle français et anglais.
-  Mesuré : un cross-encoder anglais rendait une étendue de scores de 0,0 % sur
-  une question française — un classement au hasard, qui défaisait le travail de
-  l'embedder multilingue.
-- **`LLM_NUM_CTX` borne le CLIENT**, et n'est plus envoyé au serveur : le
-  dialecte OpenAI n'a pas de champ de fenêtre, celle du serveur est fixée à son
-  lancement. Les sources qui dépassent le budget sont écartées **ici**, avec un
-  log, par la FIN et sur une frontière d'élément ; le serveur, lui, refuse la
-  requête entière au-delà de SA fenêtre (HTTP 400, mesuré le 18 septembre 2026).
-- **Le budget se calcule sur ce qui est réellement dans le prompt** — système,
-  gabarit, historique, sources — et non sur les sources seules. Un forfait
-  couvrait le reste ; il ignorait l'historique, et le prompt dépassait la fenêtre
-  dès le troisième tour. Le prompt estimé est confronté au `prompt_eval_count`
-  du serveur à chaque génération : une devinette instrumentée vaut mieux qu'une
-  devinette.
-- **Tool-calling natif, repli par regex.** `search_vectors` est déclaré comme
-  outil ; le repérage de l'appel dans la prose reste actif pour les modèles sans
-  tool-calling. Ce repli a **un seul site**, `src/agent/repli_outil.py`, qui rend
-  d'un même passage la sous-question et le texte nettoyé — deux motifs séparés
-  finissent par diverger, et la divergence laisse fuir d'un côté ce qu'elle
-  reconnaît de l'autre. Les formes reconnues sont celles que les moteurs
-  écrivent réellement, mesurées le 15 septembre 2026 ; voir
-  `documentation/agent_architecture.md`, « Boucle agentique ».
-- **Raisonnement désactivé** (`LLM_THINKING=false`) : sans ce réglage, la
-  réflexion peut consommer tout le budget de génération avant le premier token.
-  Il passe par `chat_template_kwargs`, **par requête et jamais côté serveur** —
-  posé au lancement, il contourne silencieusement la sortie structurée des deux
-  autres équipes qui partagent l'instance (bogue vLLM #39130).
-- **Proxy `/media`** : les URLs internes du stockage objet ne sont pas résolvables par le
-  navigateur ; l'API sert les objets, chemin validé contre le path traversal.
-- **Sessions persistées sur disque** (SQLite) : en mémoire, une session en
-  attente de sélection ne survivait pas au redémarrage, et deux workers uvicorn
-  ne partageaient pas leurs threads. Purge par âge et par nombre.
-- **Le registre de la purge est sur disque, dans la base du checkpointer.** En
-  mémoire, il n'atteignait que les sessions créées par le processus courant : la
-  purge ne supprimait rien de ce qui précédait le dernier redémarrage. Il n'est
-  pas adossé à la base de capture d'usage, qui porte pourtant `thread_id` et
-  `started_at` : celle-ci est désactivable par `USAGE_CAPTURE`, et la purge du
-  checkpointer serait devenue conditionnelle à un réglage sans rapport.
-- **L'invalidation de l'index lexical est un contrat, doublé d'un filet.**
-  `POST /reindex` est ce que l'ingestion appelle ; la comparaison des comptes
-  rattrape l'ingestion qui ne le fait pas. Une heuristique seule aurait un angle
-  mort — autant de chunks retirés qu'ajoutés — et un contrat seul dépend d'un
-  dépôt voisin.
-- **Un journal n'affirme que ce qui a eu lieu.** Les compteurs publiés par
-  `/health` comptent les actions abouties, pas tentées. La purge des sessions a
-  passé la vie du projet à annoncer des suppressions qui échouaient, absorbées
-  par un `logger.debug` invisible au niveau de journal par défaut.
-- **Réouverture des connexions** : les clients Chroma / Nebula / stockage objet sont
-  mémorisés ; sans réouverture, le redémarrage d'un store cassait l'agent
-  jusqu'au sien.
-- **VIDs échappés, pas filtrés.** Les identifiants de documents dérivent d'un
-  chemin — séparateurs, espaces, accents — et aucun motif ne les couvre sans
-  devenir une passoire. Ils ne viennent jamais de l'utilisateur. La validation
-  stricte (`^[a-f0-9]{10}$`) reste sur le seul format qu'un appelant fournit.
-- **Endpoints synchrones en `def`** : l'inférence CPU tourne dans le threadpool
-  FastAPI, l'event loop reste libre.
-- **L'embedder et le cross-encoder calculent sur le GPU depuis le 11 septembre
-  2026, et c'est une décision mesurée.** La ligne précédente disait « Torch
-  CPU-only dans l'image : pas de libs CUDA embarquées » — c'était vrai, et le
-  motif écrit était la taille de l'image (2,92 Go, contre 10,5 Go aujourd'hui).
-  La campagne du 11 septembre a tranché : `rerank_ms` p50 498 → 58, `total_ms`
-  p50 7 298 → 6 481 (−11,2 %), et la contention avec le serveur LLM — qui
-  partage la carte et porte 67 % du temps — chiffrée à **+40 ms**, contre 817
-  gagnés.
-  **Trois conditions indépendantes** décident qu'un calcul part réellement sur
-  la carte : le build de torch dans l'image, la réservation du GPU au conteneur,
-  et le réglage `TORCH_DEVICE`. Chacune suffit à tout ramener sur le CPU **sans
-  rien dire**, et c'est pourquoi `GET /health` les publie toutes les trois sous
-  `torch_device`, avec le périphérique réellement porté par chaque modèle.
-  **Conséquence d'exploitation** : la réservation rend le DÉMARRAGE du conteneur
-  dépendant d'une carte — `rc=125` sans elle —, même si le calcul peut revenir
-  sur processeur par `TORCH_DEVICE=cpu`. Mode d'emploi, diagnostic et retour en
-  arrière : [gpu_cuda.md](gpu_cuda.md) ; chiffres :
-  [campagne du 11 septembre](campagnes/2026-09-11-le-gpu-sur-les-etages-torch.md).
-- **La capture d'usage est branchée sur l'API, non sur le graphe**, et son
-  drapeau est à vrai par défaut. Un drapeau à faux annulerait le dispositif :
-  personne ne le basculera avant les premiers utilisateurs, et les premières
-  semaines d'usage ne se rattrapent pas. L'exposition n'est pas nouvelle — le
-  checkpointer persiste déjà l'état complet du graphe dans le même volume.
-
-## Contrat d'interface avec l'ingestion
-
-Voir [llm_integration_plan.md](llm_integration_plan.md). Points clés :
-
-- **ChromaDB** `rag_documents` : `element_id`, `graph_node_id`, `filename`,
-  `collection`, `source_path`, `section_title`, `language`, `depth`, `label`,
-  `page_no`, `media_url`, `chunk_index`, `chunk_count`.
-  Un élément long est réparti sur plusieurs chunks `#0`, `#1` partageant leur
-  `element_id` : la déduplication en dépend.
-- **NebulaGraph** `rag_space` : `Document → SectionHeader → SectionHeader → …`
-  via `PARENT_OF(sequence)`, plus `DESCRIBES` de chaque légende vers son
-  illustration. VIDs = sha256[:10] (éléments) ou `doc_{chemin}` (documents).
-  `sequence` porte trois réserves de lecture qui décident de la forme du
-  fenêtrage — site canonique
-  [stores.md](stores.md#les-trois-réserves-de-lecture-de-sequence).
-- **Stockage objet**, bucket `documents` : crops PNG sous `images/{stem}/{id}_{type}.png`.
-- **Embedding** : `paraphrase-multilingual-MiniLM-L12-v2` (384 dim) —
-  obligatoirement le même des deux côtés. En changer impose une réingestion
-  complète du corpus.
-
-## Évaluation
-
-`scripts/evaluate.py` interroge `/answer` sur un jeu doré et calcule ce qui se
-mesure sans juge LLM. Voir [rag_evaluation_strategy.md](rag_evaluation_strategy.md).
+Ce que l'agent lit dans chaque store, et ce qui casse sinon : [stores.md](stores.md). Le même contrat écrit à l'intention du pipeline : [pour_le_pipeline_ingestion.md](pour_le_pipeline_ingestion.md). Le plan de conception d'avant le projet, historique : [llm_integration_plan.md](llm_integration_plan.md).

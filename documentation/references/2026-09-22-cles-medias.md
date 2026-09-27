@@ -1,5 +1,8 @@
 # Empreinte des clés d'objets médias avant la bascule du stockage objet
 
+> **Archive de mesures : empreinte de référence.** Relevé pris avant une bascule, pour comparer l'état d'après. Les valeurs sont celles du jour du titre et ne se mettent pas à jour. Entrée : [etat_du_projet.md](../etat_du_projet.md), qui cite le verdict d'après la réingestion, ou la carte du [README](../../README.md#carte-de-la-documentation).
+
+
 `mesuré` le **22 septembre 2026 à 15:09 UTC**, contre le graphe et le stockage
 en service, base `main` = `a89b1f3`, code servi `ba6a8f0`.
 

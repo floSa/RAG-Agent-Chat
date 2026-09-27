@@ -1,5 +1,8 @@
 # Campagne de référence de l'agent — 8 septembre 2026
 
+> **Archive de mesures : récit de campagne daté.** Protocole, configuration et chiffres d'une campagne menée à la date du titre ; les artefacts sont dans [runs/](../../runs/). Les chiffres valent pour l'état des stores et du moteur de ce jour-là. Entrée : [l'index des campagnes](README.md) ou la carte du [README](../../README.md#carte-de-la-documentation).
+
+
 **Ce document est le SITE CANONIQUE de tous les chiffres de cette campagne.** Ils
 ne sont recopiés nulle part ailleurs : le registre, `runs/README.md` et
 `rag_evaluation_strategy.md` renvoient ici. Chaque chiffre porte sa commande et
