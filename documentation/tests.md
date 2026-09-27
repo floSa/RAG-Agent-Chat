@@ -9,7 +9,7 @@ les autres, et le troisième est le seul à parler de **qualité**.
 | Intégration | `make test-integration` | Le système tient-il debout avec les vrais stores ? |
 | Campagne | `make eval` | Les réponses sont-elles bonnes ? |
 
-## Unitaire — 1304 tests, aucune dépendance
+## Unitaire — 1316 tests, aucune dépendance
 
 > **Ce compte est `mesuré`, ET IL EST DÉSORMAIS GARDÉ.** C'était le §4.13 du
 > registre, un angle mort connu : il a pris 25 tests de retard sans que le lot ni
@@ -20,25 +20,50 @@ les autres, et le troisième est le seul à parler de **qualité**.
 > pytest tests/unit/ --collect-only -q | awk -F': ' '/^tests\/unit\/.*: [0-9]+$/ {s+=$2} END {print s}'
 > ```
 >
-> `mesuré` le 25 septembre 2026 à 12:54 UTC par LOT-42 : **1304** tests sur **63** fichiers,
+> `mesuré` le 27 septembre 2026 à 05:34 UTC par LOT-43 : **1316** tests sur **64** fichiers,
 > et les deux comptes de la recette — la somme par fichier et le total
 > que `pytest` annonce — concordent.
 >
-> **CE COMPTE MONTE DE VINGT-SIX, ET `src/` EST TOUCHÉ.**
+> **CE COMPTE MONTE DE DOUZE, ET `src/` EST TOUCHÉ.**
+> *(LOT-42 relevait **1304** sur **63** fichiers le 25 septembre à 12:54 UTC ; les **12** de plus
+> sont **5** dans le fichier neuf `test_zero_trace_du_nom_retire.py`, **4** de plus
+> dans `test_schemas.py` (5 → 9), **3** de plus
+> dans `test_contrat_champs_externes.py` (9 → 12), **1** de plus dans
+> `test_bascule_du_nom_de_champ_media.py` (16 → 17) et **1** de moins dans
+> `test_media_url_et_object_key.py` (21 → 20). Deux fichiers sont RENOMMÉS sans
+> que leur compte bouge : `test_stockage_objet.py` (4) et, pour le fichier de
+> LOT-42, `test_media_url_et_object_key.py` ; trois fonctions de
+> `test_resilience.py` le sont aussi. AUCUN TEST N'EST RETIRÉ SANS SON
+> ÉQUIVALENT, et les identifiants collectés sur les deux arbres le montrent :
+> les scènes qui prouvaient que l'ancien nom de l'URL PRODUISAIT une image —
+> contrôles positifs de B1, B2 et B3, état « avant » du fichier de LOT-42 —
+> deviennent des scènes où il n'en produit AUCUNE, et rougissent si le repli
+> revient. Le « 1 de moins » est là : l'état « avant » de la citation avec
+> image et de l'image servie tient désormais dans UNE scène,
+> `test_aucun_champ_media_ni_image_ni_plantage[ancien-nom-seul]`, qui assert
+> la citation résolue, zéro image et le refus du proxy. Le contrat de
+> `test_contrat_champs_externes.py` n'a plus qu'un état, `media_url` et
+> `object_key`, et ses 3 scènes neuves rougissent si l'ancien nom est relu à
+> un site. Les 4 de `test_schemas.py` gardent le nom `media_url` que NOTRE API
+> publie, par les deux chemins de sérialisation, et celui que le frontend lit :
+> nées des mutations M3b à M3e, que seule la garde du nom attrapait. Le fichier
+> neuf est la garde du nom retiré — §4.83 du registre.)*
+>
+> **UN RELEVÉ PRÉCÉDENT : CE COMPTE MONTAIT DE VINGT-SIX, ET `src/` ÉTAIT TOUCHÉ.**
 > *(LOT-41 relevait **1278** sur **62** fichiers le 25 septembre à 09:31 UTC ; les **26** de plus
 > sont **21** dans le fichier neuf `test_media_url_avec_repli.py`, et **5** de plus
 > dans `test_bascule_du_nom_de_champ_media.py`, qui passe de 11 à 16. Rien n'est
-> retiré. Le fichier neuf garde l'étape 1 de la sortie de MinIO — §4.82 du
-> registre : le pipeline voisin renomme `minio_url` en `media_url` et publie
+> retiré. Le fichier neuf garde l'étape 1 de la sortie de l'ancien stockage objet — §4.82 du
+> registre : le pipeline voisin renomme `<ancien champ de l'URL>` en `media_url` et publie
 > `object_key`, et notre code traverse DEUX états des stores pendant la
-> réingestion, `minio_url` seul avant, `media_url` et `object_key` seuls après.
+> réingestion, `<ancien champ de l'URL>` seul avant, `media_url` et `object_key` seuls après.
 > Chaque état est rejoué aux cinq sites qui lisent le store, jusqu'à l'image
 > servie par `/media`, la liste blanche non vide et la citation avec son image,
 > plus le cas où aucun champ média n'est porté. Le double du graphe RÉPOND à la
 > requête écrite par le vrai code, avec la sémantique `mesurée` sur le graphd
 > installé : une propriété absente du schéma d'un tag rend `__NULL__` et ne fait
 > pas échouer la requête. Les **5** de plus du second fichier sont ses contrôles
-> positifs, étendus à CHACUN des noms du contrat au lieu du seul `minio_url` —
+> positifs, étendus à CHACUN des noms du contrat au lieu du seul `<ancien champ de l'URL>` —
 > la garde du lot 29 a été retournée comme elle l'annonçait, non contournée. **Le
 > garde de cette note ne vérifie par collecte que la part du fichier neuf** ; la
 > part de 5 est annoncée ici sans être gardée, et le total de 1304 la majore.)*
@@ -241,7 +266,7 @@ les autres, et le troisième est le seul à parler de **qualité**.
 > et cloue la conséquence — aucune image, aucune exception, aucun journal. **Deux
 > des neuf sont nés d'une mutation SURVIVANTE** — le contrôle positif du releveur
 > ne portait aucun témoin de la nature `subscript`, et un site écrit
-> `meta["minio_url"]` passait alors inaperçu. **Le
+> `meta["<ancien champ de l'URL>"]` passait alors inaperçu. **Le
 > garde de cette note ne sait vérifier par collecte que le PREMIER** — il refuse
 > deux mentions de la forme « **N** dans le fichier neuf `x` » pour ne pas
 > arbitrer en silence — donc la part de 11 est annoncée ici sans être gardée ;

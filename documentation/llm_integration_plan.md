@@ -33,7 +33,7 @@
 
 Le pipeline d'ingestion (`rag-ingestion-pipeline`) est complet :
 documents PDF/HTML -> extraction structuree (Docling) -> graphe de connaissances
-(NebulaGraph) + base vectorielle (ChromaDB) + medias (MinIO).
+(NebulaGraph) + base vectorielle (ChromaDB) + medias (l'ancien stockage objet).
 
 L'agent RAG sera un **projet separe** qui consomme ces stores en lecture.
 Ce document est le contrat d'interface entre les deux projets.
@@ -72,7 +72,7 @@ Utilisateur
     | 6. Pour chaque chunk selectionne :
     |    - NebulaGraph: remonter PARENT_OF jusqu'au section_header
     |    - NebulaGraph: redescendre pour recuperer tous les enfants de la section
-    |    - MinIO: recuperer les images/tables de la section
+    |    - l'ancien stockage objet: recuperer les images/tables de la section
     v
 [Enriched Context Builder]
     |
@@ -112,7 +112,7 @@ Chaque resultat contient dans ses metadatas :
 - `graph_node_id` : ID du noeud NebulaGraph (= `element_id`)
 - `element_id` : hash sha256[:10] de l'element
 - `page_position`, `ref_position` : position dans la page et sous le parent
-- `minio_url` : URL de l'image/table si applicable
+- `<ancien champ de l'URL>` : URL de l'image/table si applicable
 
 ### 3.2 Reranking
 
@@ -194,15 +194,15 @@ Caption: Figure 3 - Example of table structure prediction.
 GO FROM "section_header_id" OVER PARENT_OF
 YIELD properties($$).label AS label,
       properties($$).text AS text,
-      properties($$).minio_url AS minio_url,
+      properties($$).<ancien champ de l'URL> AS <ancien champ de l'URL>,
       properties(edge).sequence AS seq
 | ORDER BY $-.seq ASC;
 ```
 
 **Phase 3 — Recuperer les images/tables**
 
-Pour chaque enfant ayant un `minio_url` non vide :
-- Telecharger l'image depuis MinIO
+Pour chaque enfant ayant un `<ancien champ de l'URL>` non vide :
+- Telecharger l'image depuis l'ancien stockage objet
 - L'encoder en base64 pour injection dans le prompt (LLM multimodal)
 - Ou fournir l'URL pour affichage dans la reponse
 
@@ -245,7 +245,7 @@ Le modele dispose d'un tool `search_vectors(query: str)` qui :
 1. **Extraction des citations** : parser les `[src:ELEMENT_ID]` pour construire
    la liste des sources utilisees
 2. **Inclusion des images** : pour chaque `[img:ELEMENT_ID]`, recuperer l'URL
-   MinIO et l'attacher a la reponse
+   l'ancien stockage objet et l'attacher a la reponse
 3. **Validation guardrails** : verifier que la reponse ne contient pas de PII,
    que chaque affirmation a une citation, etc.
 
@@ -265,7 +265,7 @@ Le modele dispose d'un tool `search_vectors(query: str)` qui :
 | metadata.filename      | string | Nom du document source (sans extension) |
 | metadata.label         | string | Label Docling (paragraph, table, ...) |
 | metadata.page_no       | int    | Numero de page                      |
-| metadata.minio_url     | string | URL MinIO si image/table ("" sinon) |
+| metadata.<ancien champ de l'URL>     | string | URL de l'ancien stockage objet si image/table ("" sinon) |
 
 **Modele d'embedding** : `all-MiniLM-L6-v2` (384 dimensions).
 L'agent doit utiliser le MEME modele pour encoder les questions.
@@ -282,17 +282,17 @@ l'ordre global de lecture).
 | Tag            | Proprietes                                      |
 |----------------|-------------------------------------------------|
 | Document       | filename: string, type_file: string             |
-| SectionHeader  | label: string, page_no: int, text: string, minio_url: string |
-| Paragraph      | label: string, page_no: int, text: string, minio_url: string |
-| Table          | label: string, page_no: int, text: string, minio_url: string |
-| Picture        | label: string, page_no: int, text: string, minio_url: string |
-| ListItem       | label: string, page_no: int, text: string, minio_url: string |
-| Caption        | label: string, page_no: int, text: string, minio_url: string |
-| Code           | label: string, page_no: int, text: string, minio_url: string |
-| Formula        | label: string, page_no: int, text: string, minio_url: string |
-| Footnote       | label: string, page_no: int, text: string, minio_url: string |
-| PageHeader     | label: string, page_no: int, text: string, minio_url: string |
-| PageFooter     | label: string, page_no: int, text: string, minio_url: string |
+| SectionHeader  | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
+| Paragraph      | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
+| Table          | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
+| Picture        | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
+| ListItem       | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
+| Caption        | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
+| Code           | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
+| Formula        | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
+| Footnote       | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
+| PageHeader     | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
+| PageFooter     | label: string, page_no: int, text: string, <ancien champ de l'URL>: string |
 
 **Edges (relations)** :
 
@@ -327,15 +327,15 @@ GO FROM "element_id" OVER LINKED_TO
 YIELD dst(edge) AS linked, properties(edge).relation AS rel;
 ```
 
-### 4.3 MinIO — Bucket `documents`
+### 4.3 L'ancien stockage objet — Bucket `documents`
 
 | Champ         | Description                                        |
 |---------------|----------------------------------------------------|
-| Endpoint      | `minio:9000` (interne) ou via override              |
+| Endpoint      | `<hôte de l'ancien stockage objet>:9000` (interne) ou via override              |
 | Bucket        | `documents`                                         |
 | Object path   | `images/{filename_stem}/{element_id}_{type}.png`    |
 | Content-Type  | `image/png`                                         |
-| Acces         | Via SDK MinIO (S3-compatible), credentials dans .env |
+| Acces         | Via le SDK de l'ancien stockage objet (S3-compatible), credentials dans .env |
 
 ### 4.4 Schemas Pydantic (reutilisables)
 
@@ -355,7 +355,7 @@ class DocumentElement(BaseModel):
     bbox: BoundingBox | None = None
     text: str = ""
     order: int = 0
-    minio_url: str | None = None
+    <ancien champ de l'URL>: str | None = None
     content: str | None = None
     reference_id: str = "DOC"      # ID du parent
     page_position: int = 0
@@ -417,7 +417,7 @@ agent-llm-rag/
             state.py           # AgentState dataclass
             retriever.py       # ChromaDB query + reranking
             graph_context.py   # Reconstruction via NebulaGraph
-            minio_client.py    # Recuperation images MinIO
+            stockage_objet.py    # Recuperation images de l'ancien stockage objet
             llm.py             # Client LLM (API commerciale)
             tools.py           # Tool search_vectors pour l'agentic loop
             guardrails.py      # Validation input/output
@@ -491,13 +491,13 @@ L'agent doit acceder aux 3 stores de donnees. Deux options :
 L'agent tourne sur `rag_network` et accede directement :
 - ChromaDB : `http://chromadb:8000`
 - NebulaGraph : `graphd:9669`
-- MinIO : `minio:9000`
+- L'ancien stockage objet : `<hôte de l'ancien stockage objet>:9000`
 
 **Option B — Acces externe** (prod ou projet separe)
 Exposer les ports via `docker-compose.override.yml` du projet d'ingestion :
 - ChromaDB : `http://localhost:8080`
 - NebulaGraph : `localhost:9669`
-- MinIO : `localhost:9000`
+- L'ancien stockage objet : `localhost:9000`
 
 Les credentials sont les memes que dans `.env` du projet d'ingestion.
 
@@ -513,10 +513,10 @@ NEBULA_HOST=graphd
 NEBULA_PORT=9669
 NEBULA_USER=root
 NEBULA_PASSWORD=nebula
-MINIO_ENDPOINT=minio:9000
-MINIO_ROOT_USER=admin
-MINIO_ROOT_PASSWORD=            # meme que le projet d'ingestion
-MINIO_BUCKET=documents
+S3_ENDPOINT=<hôte de l'ancien stockage objet>:9000
+S3_ACCESS_KEY=admin
+S3_SECRET_KEY=            # meme que le projet d'ingestion
+S3_BUCKET=documents
 
 # --- LLM ---
 LLM_API_KEY=                    # clé du fournisseur commercial
@@ -559,7 +559,7 @@ LANGFUSE_SECRET_KEY=
 - Client NebulaGraph (nebula3-python)
 - Algorithme de remontee PARENT_OF -> section_header
 - Algorithme de descente -> enfants de la section
-- Recuperation images MinIO
+- Recuperation images de l'ancien stockage objet
 - Assemblage du contexte enrichi en markdown structure
 
 ### Phase 4 — LLM Generation (2 jours)

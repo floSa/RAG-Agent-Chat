@@ -21,7 +21,7 @@ from src.agent.graph import node_postprocess
 from src.agent.graph_context import _render_element
 from src.api.schemas import ChunkResult, SectionContext, SectionElement
 
-MINIO_URL = "http://minio:9000/documents/images/livre/abcdef0123_picture.png"
+MEDIA_URL = "http://stockage-fictif:9000/documents/images/livre/abcdef0123_picture.png"
 
 
 def _markdown(*groupes: list[SectionElement]) -> str:
@@ -158,18 +158,18 @@ def test_reponse_sans_citation() -> None:
 # ─── Images ───────────────────────────────────────────────────────────────────
 
 def test_image_du_graphe_est_servie_par_le_proxy_media() -> None:
-    """Les URLs minio:9000 ne sont pas résolvables depuis le navigateur."""
+    """Les URLs internes du stockage objet ne sont pas résolvables depuis le navigateur."""
     state = {
         "response": "Voir la figure [img:abcdef0123].",
         "reranked_chunks": [],
         "submitted_contexts": [
-            _context(elements=[_element("abcdef0123", label="picture", minio_url=MINIO_URL)])
+            _context(elements=[_element("abcdef0123", label="picture", media_url=MEDIA_URL)])
         ],
     }
     image = node_postprocess(state)["images"][0]
 
     assert image.element_id == "abcdef0123"
-    assert image.minio_url == "/media/images/livre/abcdef0123_picture.png"
+    assert image.media_url == "/media/images/livre/abcdef0123_picture.png"
 
 
 def test_image_sans_media_connu_est_ignoree() -> None:
@@ -186,7 +186,7 @@ def test_image_dupliquee_n_apparait_qu_une_fois() -> None:
         "response": "[img:abcdef0123] puis encore [img:abcdef0123].",
         "reranked_chunks": [],
         "submitted_contexts": [
-            _context(elements=[_element("abcdef0123", label="picture", minio_url=MINIO_URL)])
+            _context(elements=[_element("abcdef0123", label="picture", media_url=MEDIA_URL)])
         ],
     }
     assert len(node_postprocess(state)["images"]) == 1
@@ -206,7 +206,7 @@ def test_illustration_de_la_section_citee_est_affichee() -> None:
             _context(
                 elements=[
                     _element("abcdef0123", text="Le processus n'est pas linéaire."),
-                    _element("1111111111", label="picture", minio_url=MINIO_URL),
+                    _element("1111111111", label="picture", media_url=MEDIA_URL),
                 ]
             )
         ],
@@ -222,7 +222,7 @@ def test_section_non_citee_ne_montre_pas_ses_illustrations() -> None:
         "response": "Une affirmation sans source.",
         "reranked_chunks": [],
         "submitted_contexts": [
-            _context(elements=[_element("1111111111", label="picture", minio_url=MINIO_URL)])
+            _context(elements=[_element("1111111111", label="picture", media_url=MEDIA_URL)])
         ],
     }
 
@@ -234,7 +234,7 @@ def test_nombre_d_illustrations_borne(monkeypatch) -> None:
 
     monkeypatch.setattr(graph_module.settings, "max_images", 2)
     elements = [_element("abcdef0123", text="Un fait.")] + [
-        _element(f"{i}" * 10, label="picture", minio_url=MINIO_URL) for i in range(1, 6)
+        _element(f"{i}" * 10, label="picture", media_url=MEDIA_URL) for i in range(1, 6)
     ]
     state = {
         "response": "Un fait [src:abcdef0123].",
@@ -254,7 +254,7 @@ def test_image_non_dupliquee_entre_les_deux_voies() -> None:
             _context(
                 elements=[
                     _element("abcdef0123", text="Un fait."),
-                    _element("1111111111", label="picture", minio_url=MINIO_URL),
+                    _element("1111111111", label="picture", media_url=MEDIA_URL),
                 ]
             )
         ],

@@ -61,7 +61,7 @@ n'intéresse pas l'utilisateur — la recherche est amputée dans les deux cas.
 | `language` | Stratifie l'évaluation, annoncée dans l'UI. |
 | `page_no` | Situe le passage. Vaut 1 pour les formats non paginés. |
 | `chunk_index` | Remet les fenêtres d'un élément long dans l'ordre. |
-| `minio_url` | Résolu vers le proxy `/media`. |
+| `media_url` | Résolu vers le proxy `/media`. |
 | `depth` | Lu, mais la remontée du graphe fait mieux. |
 
 ### Ce qui casse
@@ -301,14 +301,14 @@ Pour la forme du graphe elle-même — profondeur, imbrication des titres, et le
 214 en-têtes sans frère en-tête — le site canonique est le **§4.6** de
 [`axes_amelioration.md`](axes_amelioration.md).
 
-## MinIO — les illustrations
+## Le stockage objet — les illustrations
 
 | | |
 |---|---|
-| Adresse | `minio:9000`, bucket `documents` |
-| Utilisé par | `src/agent/minio_client.py` |
+| Adresse | `<hôte du stockage objet>:9000`, bucket `documents` |
+| Utilisé par | `src/agent/stockage_objet.py` |
 
-Les URLs stockées pointent sur `minio:9000`, que le navigateur de l'utilisateur
+Les URLs stockées pointent sur `<hôte du stockage objet>:9000`, que le navigateur de l'utilisateur
 ne sait pas résoudre : l'API les sert via `GET /media/{chemin}`. Ce proxy est
 borné aux objets référencés par le graphe — voir [SECURITY.md](SECURITY.md).
 

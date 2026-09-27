@@ -3,7 +3,7 @@
 ## Vue d'ensemble
 
 Agent RAG conversationnel qui consomme **en lecture seule** les stores produits
-par `rag-ingestion-pipeline` (ChromaDB, NebulaGraph, MinIO) et génère les
+par `rag-ingestion-pipeline` (ChromaDB, NebulaGraph, stockage objet) et génère les
 réponses avec un LLM servi par le projet `llm-service`. Le flux est orchestré
 par une machine à états LangGraph, avec deux points d'entrée : un flux
 interactif où l'utilisateur choisit ses sources, et un flux direct destiné à
@@ -24,7 +24,7 @@ plusieurs gigaoctets d'un modèle déjà servi.
 Trois réseaux :
 
 - `rag_network` (externe, créé par `rag-ingestion-pipeline`) : accès aux stores
-  `chromadb:8000`, `graphd:9669`, `minio:9000` ;
+  `chromadb:8000`, `graphd:9669`, `<hôte du stockage objet>:9000` ;
 - `llm-net` (externe, créé par `llm-service`) : accès à `vllm-central:8000` ;
 - `internal` (bridge) : frontend ↔ agent-api.
 
@@ -277,7 +277,7 @@ cohérence tombe si sa liste d'étages s'écarte de celle de `chronometrie`.
   Il passe par `chat_template_kwargs`, **par requête et jamais côté serveur** —
   posé au lancement, il contourne silencieusement la sortie structurée des deux
   autres équipes qui partagent l'instance (bogue vLLM #39130).
-- **Proxy `/media`** : les URLs MinIO internes ne sont pas résolvables par le
+- **Proxy `/media`** : les URLs internes du stockage objet ne sont pas résolvables par le
   navigateur ; l'API sert les objets, chemin validé contre le path traversal.
 - **Sessions persistées sur disque** (SQLite) : en mémoire, une session en
   attente de sélection ne survivait pas au redémarrage, et deux workers uvicorn
@@ -297,7 +297,7 @@ cohérence tombe si sa liste d'étages s'écarte de celle de `chronometrie`.
   `/health` comptent les actions abouties, pas tentées. La purge des sessions a
   passé la vie du projet à annoncer des suppressions qui échouaient, absorbées
   par un `logger.debug` invisible au niveau de journal par défaut.
-- **Réouverture des connexions** : les clients Chroma / Nebula / MinIO sont
+- **Réouverture des connexions** : les clients Chroma / Nebula / stockage objet sont
   mémorisés ; sans réouverture, le redémarrage d'un store cassait l'agent
   jusqu'au sien.
 - **VIDs échappés, pas filtrés.** Les identifiants de documents dérivent d'un
@@ -336,7 +336,7 @@ Voir [llm_integration_plan.md](llm_integration_plan.md). Points clés :
 
 - **ChromaDB** `rag_documents` : `element_id`, `graph_node_id`, `filename`,
   `collection`, `source_path`, `section_title`, `language`, `depth`, `label`,
-  `page_no`, `minio_url`, `chunk_index`, `chunk_count`.
+  `page_no`, `media_url`, `chunk_index`, `chunk_count`.
   Un élément long est réparti sur plusieurs chunks `#0`, `#1` partageant leur
   `element_id` : la déduplication en dépend.
 - **NebulaGraph** `rag_space` : `Document → SectionHeader → SectionHeader → …`
@@ -345,7 +345,7 @@ Voir [llm_integration_plan.md](llm_integration_plan.md). Points clés :
   `sequence` porte trois réserves de lecture qui décident de la forme du
   fenêtrage — site canonique
   [stores.md](stores.md#les-trois-réserves-de-lecture-de-sequence).
-- **MinIO** bucket `documents` : crops PNG sous `images/{stem}/{id}_{type}.png`.
+- **Stockage objet**, bucket `documents` : crops PNG sous `images/{stem}/{id}_{type}.png`.
 - **Embedding** : `paraphrase-multilingual-MiniLM-L12-v2` (384 dim) —
   obligatoirement le même des deux côtés. En changer impose une réingestion
   complète du corpus.

@@ -20,11 +20,11 @@ from src.agent.llm import (
     rewrite_question,
     translate_question,
 )
-from src.agent.minio_client import to_media_path
 from src.agent.repli_outil import lire_et_retirer
 from src.agent.retriever import group_by_document, rerank, retrieve
 from src.agent.settings import settings
 from src.agent.state import AgentState
+from src.agent.stockage_objet import to_media_path
 from src.api.schemas import ChunkResult, Citation, ImageRef, SectionContext
 
 logger = logging.getLogger(__name__)
@@ -432,8 +432,8 @@ def resolve_citations(
             # figure n'a pas de texte, le modèle n'en voit qu'un marqueur, et la
             # perdre parce que la coupe a emporté ce marqueur retirerait au
             # lecteur une figure qui appartient réellement à la section citée.
-            if elem.minio_url:
-                media_map.setdefault(elem.node_id, to_media_path(elem.minio_url, elem.object_key))
+            if elem.media_url:
+                media_map.setdefault(elem.node_id, to_media_path(elem.media_url, elem.object_key))
             if elem.node_id not in soumis:
                 continue
             elements_map.setdefault(
@@ -448,9 +448,9 @@ def resolve_citations(
                 ),
             )
     for reranked in chunks:
-        if reranked.minio_url:
+        if reranked.media_url:
             media_map.setdefault(
-                reranked.element_id, to_media_path(reranked.minio_url, reranked.object_key)
+                reranked.element_id, to_media_path(reranked.media_url, reranked.object_key)
             )
 
     # Citations résolues d'abord depuis les chunks (document et page fiables),
@@ -504,7 +504,7 @@ def resolve_citations(
         chemin = media_map.get(eid)
         if chemin and eid not in vus:
             vus.add(eid)
-            images.append(ImageRef(element_id=eid, minio_url=chemin))
+            images.append(ImageRef(element_id=eid, media_url=chemin))
 
     # Voie 1 : le marqueur explicite du modèle. Filtrée comme une citation —
     # c'est le modèle qui affirme avoir vu cette illustration, et publier une
@@ -544,7 +544,7 @@ def resolve_citations(
         for elem in ctx.elements:
             if len(images) >= settings.max_images:
                 break
-            if elem.minio_url and elem.label.lower() in ("picture", "table"):
+            if elem.media_url and elem.label.lower() in ("picture", "table"):
                 ajouter(elem.node_id)
 
     return citations, images

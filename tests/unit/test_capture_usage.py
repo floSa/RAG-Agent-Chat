@@ -195,7 +195,7 @@ async def test_l_enregistrement_couvre_les_deux_phases_jointes_par_thread_id(bas
                 page_no=88, text_excerpt="…",
             )
         ],
-        images=[ImageRef(element_id="aaaaaaaaa9", minio_url="/media/x.png")],
+        images=[ImageRef(element_id="aaaaaaaaa9", media_url="/media/x.png")],
         search_count=1,
         submitted=[_section("aaaaaaaaa1"), _section("aaaaaaaaa2", "sssssssss2")],
         selected_element_ids=["aaaaaaaaa1", "aaaaaaaaa2"],

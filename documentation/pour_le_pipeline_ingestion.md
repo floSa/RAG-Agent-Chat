@@ -87,7 +87,7 @@ Site canonique du raisonnement complet, des deux décisions et de leur prix :
 
 Constaté, pas supposé :
 
-- **aucun volume Docker ne contient de données ChromaDB, NebulaGraph ou MinIO.**
+- **aucun volume Docker ne contient de données ChromaDB, NebulaGraph ou du stockage objet.**
   Les 15 volumes de la machine ont été listés ; les stores sont vides ou absents.
   **Une réingestion complète du corpus est donc nécessaire**, pas un simple
   redémarrage ;
@@ -273,7 +273,7 @@ Constaté, pas supposé :
 Métadonnées attendues par chunk :
 
 `element_id`, `graph_node_id`, `filename`, `collection`, `source_path`,
-`section_title`, `language`, `depth`, `label`, `page_no`, `minio_url`,
+`section_title`, `language`, `depth`, `label`, `page_no`, `media_url`,
 `chunk_index`, `chunk_count`.
 
 Trois exigences qui ne se devinent pas :
@@ -334,9 +334,9 @@ désormais écrit et **gardé par un test** de ce côté-ci. Site canonique :
 [stores.md](stores.md#les-trois-réserves-de-lecture-de-sequence). Les trois
 chiffres que le pipeline avait transmis ont été reproduits ici à l'unité.
 
-### MinIO, bucket `documents`
+### Le stockage objet, bucket `documents`
 
-Crops PNG sous `images/{stem}/{id}_{type}.png`, référencés par `minio_url` dans
+Crops PNG sous `images/{stem}/{id}_{type}.png`, référencés par `media_url` dans
 les métadonnées ChromaDB.
 
 L'agent ne sert que les objets **référencés par le graphe**

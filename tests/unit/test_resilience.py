@@ -1,14 +1,14 @@
 """Réouverture des connexions mises en cache.
 
-Les clients ChromaDB, NebulaGraph et MinIO sont mémorisés par `lru_cache`. Si un
-store redémarre, l'objet mémorisé pointe vers une connexion morte et toutes les
-requêtes échouent — jusqu'au redémarrage de l'agent lui-même. Chaque module doit
-savoir oublier son cache et retenter une fois.
+Les clients ChromaDB, NebulaGraph et du stockage objet sont mémorisés par
+`lru_cache`. Si un store redémarre, l'objet mémorisé pointe vers une connexion
+morte et toutes les requêtes échouent — jusqu'au redémarrage de l'agent
+lui-même. Chaque module doit savoir oublier son cache et retenter une fois.
 """
 
 import pytest
 
-from src.agent import graph_context, minio_client, retriever
+from src.agent import graph_context, retriever, stockage_objet
 from src.agent.settings import settings
 
 # ─── ChromaDB ─────────────────────────────────────────────────────────────────
@@ -102,12 +102,12 @@ def test_nebula_propage_l_echec_si_la_reouverture_ne_suffit_pas(monkeypatch) -> 
         graph_context._execute("YIELD 1;")
 
 
-# ─── MinIO ────────────────────────────────────────────────────────────────────
+# ─── Stockage objet ───────────────────────────────────────────────────────────
 
-def test_minio_recree_le_client_et_retente(monkeypatch) -> None:
+def test_stockage_objet_recree_le_client_et_retente(monkeypatch) -> None:
     # L'autorisation par le graphe est testée ailleurs : ici on isole la
     # réouverture de connexion.
-    monkeypatch.setattr(minio_client, "is_allowed", lambda _n: True)
+    monkeypatch.setattr(stockage_objet, "is_allowed", lambda _n: True)
     class Response:
         def read(self) -> bytes:
             return b"PNG"
@@ -122,36 +122,36 @@ def test_minio_recree_le_client_et_retente(monkeypatch) -> None:
         def get_object(self, _bucket, _name):
             state["calls"] += 1
             if state["calls"] == 1:
-                raise ConnectionError("MinIO a redémarré")
+                raise ConnectionError("le stockage objet a redémarré")
             return Response()
 
     cleared = []
-    monkeypatch.setattr(minio_client, "_get_minio_client", Client)
-    monkeypatch.setattr(minio_client, "reset_connection", lambda: cleared.append(True))
+    monkeypatch.setattr(stockage_objet, "_get_client_s3", Client)
+    monkeypatch.setattr(stockage_objet, "reset_connection", lambda: cleared.append(True))
 
-    assert minio_client.get_object_bytes("images/a/b.png") == b"PNG"
+    assert stockage_objet.get_object_bytes("images/a/b.png") == b"PNG"
     assert state["calls"] == 2  # noqa: PLR2004
     assert cleared == [True]
 
 
-def test_minio_abandonne_apres_un_second_echec(monkeypatch) -> None:
-    monkeypatch.setattr(minio_client, "is_allowed", lambda _n: True)
+def test_stockage_objet_abandonne_apres_un_second_echec(monkeypatch) -> None:
+    monkeypatch.setattr(stockage_objet, "is_allowed", lambda _n: True)
     class Client:
         def get_object(self, _bucket, _name):
-            raise ConnectionError("MinIO est mort")
+            raise ConnectionError("le stockage objet est mort")
 
-    monkeypatch.setattr(minio_client, "_get_minio_client", Client)
-    monkeypatch.setattr(minio_client, "reset_connection", lambda: None)
+    monkeypatch.setattr(stockage_objet, "_get_client_s3", Client)
+    monkeypatch.setattr(stockage_objet, "reset_connection", lambda: None)
 
-    assert minio_client.get_object_bytes("images/a/b.png") is None
+    assert stockage_objet.get_object_bytes("images/a/b.png") is None
 
 
-def test_minio_refuse_toujours_les_chemins_douteux(monkeypatch) -> None:
+def test_stockage_objet_refuse_toujours_les_chemins_douteux(monkeypatch) -> None:
     """La réouverture ne doit pas affaiblir le garde-fou anti-traversal."""
     appels = []
-    monkeypatch.setattr(minio_client, "_get_minio_client", lambda: appels.append(True))
+    monkeypatch.setattr(stockage_objet, "_get_client_s3", lambda: appels.append(True))
 
-    assert minio_client.get_object_bytes("../../etc/passwd") is None
+    assert stockage_objet.get_object_bytes("../../etc/passwd") is None
     assert appels == []
 
 

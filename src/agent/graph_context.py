@@ -7,9 +7,9 @@ from nebula3.common.ttypes import ErrorCode
 from nebula3.Config import SessionPoolConfig
 from nebula3.gclient.net.SessionPool import SessionPool
 
-from src.agent.minio_client import cle_objet
 from src.agent.retriever import full_texts
 from src.agent.settings import settings
+from src.agent.stockage_objet import cle_objet
 from src.api.schemas import BreadcrumbEntry, SectionContext, SectionElement
 
 logger = logging.getLogger(__name__)
@@ -308,7 +308,7 @@ def _get_node_properties(node_id: str) -> dict[str, Any]:
             "label": "document",
             "text": props.get("filename") or "",
             "collection": props.get("collection") or "",
-            "minio_url": None,
+            "media_url": None,
             "object_key": None,
             "page_no": 0,
         }
@@ -322,9 +322,9 @@ def _get_node_properties(node_id: str) -> dict[str, Any]:
         "tag": tag,
         "label": props.get("label") or "",
         "text": props.get("text") or "",
-        # `media_url`, et `minio_url` à défaut : les deux états que le graphe
-        # traverse pendant la réingestion — §4.82. La clé interne garde son nom.
-        "minio_url": props.get("media_url") or props.get("minio_url") or None,
+        # `media_url` et `object_key`, les deux seuls noms du contrat depuis
+        # la réingestion — §4.83. Aucun repli sur l'ancien nom.
+        "media_url": props.get("media_url") or None,
         "object_key": props.get("object_key") or None,
         "page_no": props.get("page_no") or 0,
     }
@@ -653,12 +653,12 @@ def _caption_links(caption_ids: list[str]) -> dict[str, str]:
     return links
 
 
-# Tags porteurs d'une illustration exportée vers MinIO.
+# Tags porteurs d'une illustration exportée vers le stockage objet.
 _VISUAL_TAGS = ("Picture", "Table")
 
 
 def media_object_names() -> set[str]:
-    """Chemins d'objets MinIO réellement référencés par le graphe.
+    """Chemins d'objets du stockage objet réellement référencés par le graphe.
 
     Sert d'autorisation au proxy `/media` : sans elle, l'endpoint sert
     n'importe quel objet du bucket à qui devine son chemin. Le garde-fou
@@ -667,15 +667,14 @@ def media_object_names() -> set[str]:
     La liste vient du graphe et non de l'index vectoriel : une illustration n'a
     pas de texte, elle n'est donc pas vectorisée et manquerait à l'appel.
 
-    La requête nomme les TROIS propriétés du contrat — `media_url`,
-    `minio_url`, `object_key` — alors que le schéma d'un tag n'en porte jamais
-    que certaines : `minio_url` seule avant la réingestion, `media_url` et
-    `object_key` seules après (§4.82). C'est sûr, et c'est `mesuré` le
-    25 septembre 2026 sur le graphd installé (`vesoft/nebula-graphd:v3.6.0`,
-    lecture seule) : une propriété absente du schéma d'un tag EXISTANT ne fait
-    pas échouer le `MATCH`, elle rend `__NULL__`, son `!= ""` n'est pas vrai, et
-    le `OR` rend les 212 objets d'aujourd'hui — 209 `Picture`, 3 `Table` —
-    qu'elle soit placée en tête ou en queue. La clé est `object_key` quand il
+    La requête nomme les DEUX propriétés du contrat — `media_url` et
+    `object_key` — et elles seules : l'ancien nom de l'URL n'existe plus dans le
+    schéma depuis la réingestion (§4.83). Si l'une manquait au schéma, ce serait
+    sans danger, et c'est `mesuré` le 25 septembre 2026 sur le graphd installé
+    (`vesoft/nebula-graphd:v3.6.0`, lecture seule, §4.82) : une propriété absente
+    du schéma d'un tag EXISTANT ne fait pas échouer le `MATCH`, elle rend
+    `__NULL__`, son `!= ""` n'est pas vrai, et un `OR` est vrai dès qu'un membre
+    l'est, où qu'il soit placé. La clé est `object_key` quand il
     est publié, sinon déduite de l'URL par `object_name_from_url`, la règle
     même du proxy : la liste blanche et le chemin `/media` d'une image ne
     peuvent plus décoder la même URL de deux façons (§4.62).
@@ -683,15 +682,13 @@ def media_object_names() -> set[str]:
     noms: set[str] = set()
     for tag in _VISUAL_TAGS:
         rows = _execute(
-            f'MATCH (n:{tag}) WHERE n.{tag}.media_url != "" OR n.{tag}.minio_url != "" '
-            f'OR n.{tag}.object_key != "" '
-            f"RETURN n.{tag}.media_url AS media_url, n.{tag}.minio_url AS minio_url, "
-            f"n.{tag}.object_key AS object_key;"
+            f'MATCH (n:{tag}) WHERE n.{tag}.media_url != "" OR n.{tag}.object_key != "" '
+            f"RETURN n.{tag}.media_url AS media_url, n.{tag}.object_key AS object_key;"
         )
         for row in rows:
             cle = cle_objet(
                 row.get("object_key") or None,
-                row.get("media_url") or row.get("minio_url") or None,
+                row.get("media_url") or None,
             )
             if cle:
                 noms.add(cle)
@@ -746,11 +743,10 @@ def _get_children(section_id: str) -> list[dict[str, Any]]:
         f'YIELD dst(edge) AS child_id, '
         f'properties($$).label AS label, '
         f'properties($$).text AS text, '
-        # Les trois noms du contrat, dont le schéma ne porte que certains : une
-        # propriété absente rend `__NULL__` sans faire échouer le `GO` —
-        # `mesuré` au §4.82, comme pour `media_object_names`.
+        # Les deux noms du contrat. Une propriété absente du schéma rendrait
+        # `__NULL__` sans faire échouer le `GO` — `mesuré` au §4.82, comme pour
+        # `media_object_names`.
         f'properties($$).media_url AS media_url, '
-        f'properties($$).minio_url AS minio_url, '
         f'properties($$).object_key AS object_key, '
         f'properties($$).page_no AS page_no, '
         f'properties(edge).sequence AS seq '
@@ -890,9 +886,9 @@ def _render_element(elem: SectionElement) -> str:
     if label == "table":
         header = f"[Tableau] {elem.caption}".rstrip() if elem.caption else "[Tableau]"
         body = f"{header} {elem.text} {src}"
-        return f"{body}\n\n[img:{elem.node_id}]" if elem.minio_url else body
+        return f"{body}\n\n[img:{elem.node_id}]" if elem.media_url else body
     if label == "picture":
-        if not elem.minio_url:
+        if not elem.media_url:
             return ""
         # La légende est le seul texte dont dispose le LLM pour juger si
         # l'illustration sert la réponse.
@@ -952,7 +948,7 @@ def _to_elements(rows: list[dict[str, Any]]) -> list[SectionElement]:
             node_id=row.get("child_id", ""),
             label=row.get("label", "") or "",
             text=row.get("text", "") or "",
-            minio_url=row.get("media_url") or row.get("minio_url") or None,
+            media_url=row.get("media_url") or None,
             object_key=row.get("object_key") or None,
             sequence=int(row.get("seq", 0)),
             page_no=int(row.get("page_no") or 0),

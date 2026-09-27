@@ -73,10 +73,10 @@ class ChunkResult(BaseModel):
     depth: int = 0
     page_no: int
     label: str                        # paragraph, section_header, table, picture…
-    minio_url: str | None = None
+    media_url: str | None = None
     # La clé nue de l'objet, publiée par la source depuis la bascule de son
-    # stockage — §4.82. INTERNE : exclue de la sérialisation, la forme de notre
-    # réponse ne change pas dans ce lot.
+    # stockage — §4.82. INTERNE : exclue de la sérialisation, notre réponse ne
+    # la publie pas.
     object_key: str | None = Field(default=None, exclude=True)
     page_position: int = 0
     ref_position: int = 0
@@ -158,7 +158,7 @@ class SectionElement(BaseModel):
     node_id: str
     label: str
     text: str
-    minio_url: str | None = None
+    media_url: str | None = None
     object_key: str | None = Field(default=None, exclude=True)  # §4.82, interne
     sequence: int
     page_no: int = 0
@@ -225,7 +225,7 @@ class Citation(BaseModel):
 
 class ImageRef(BaseModel):
     element_id: str
-    minio_url: str
+    media_url: str
 
 
 class ChatResponse(BaseModel):

@@ -22,12 +22,12 @@ class Settings(BaseSettings):
     # graphd fige la requête FastAPI qui l'attend.
     nebula_timeout_ms: int = Field(default=15_000, alias="NEBULA_TIMEOUT_MS")
 
-    # MinIO
-    minio_endpoint: str = Field(default="seaweedfs:8333", alias="MINIO_ENDPOINT")
-    minio_root_user: str = Field(default="", alias="MINIO_ROOT_USER")
-    minio_root_password: str = Field(default="", alias="MINIO_ROOT_PASSWORD")
-    minio_bucket: str = Field(default="documents", alias="MINIO_BUCKET")
-    minio_secure: bool = Field(default=False, alias="MINIO_SECURE")
+    # Stockage objet S3 (SeaweedFS). Anciens noms NON relus : table au §4.83 du registre.
+    s3_endpoint: str = Field(default="seaweedfs:8333", alias="S3_ENDPOINT")
+    s3_access_key: str = Field(default="", alias="S3_ACCESS_KEY")
+    s3_secret_key: str = Field(default="", alias="S3_SECRET_KEY")
+    s3_bucket: str = Field(default="documents", alias="S3_BUCKET")
+    s3_secure: bool = Field(default=False, alias="S3_SECURE")
     # Le proxy /media ne sert que les objets référencés par le graphe. Sans
     # cette borne, il sert n'importe quel objet du bucket à qui devine son
     # chemin — le garde-fou anti-traversal empêche de sortir du bucket, pas
