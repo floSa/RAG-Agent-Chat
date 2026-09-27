@@ -1,264 +1,109 @@
-# Architecture de l'agent RAG
+# L'agent en détail
 
-## Vue d'ensemble
+Les nœuds du graphe LangGraph, l'état qu'ils se passent, la mémoire de conversation, les prompts, la boucle agentique et la table des réglages. Pour qui modifie le comportement de l'agent.
 
-`rag-agent-chat` est une application de question-réponse documentaire basée sur un agent LangGraph avec interruption humaine (*human-in-the-loop*). Il consomme en lecture seule les données produites par `rag-ingestion-pipeline` (ChromaDB, NebulaGraph, stockage objet) et expose une API FastAPI ainsi qu'une interface Streamlit.
+La vue système (services, écritures, décisions) est dans [architecture.md](architecture.md) ; le chemin d'une question, en schéma, dans le [README](../README.md#le-chemin-dune-question).
 
----
+## Le graphe
 
-## Vue contexte
+Vérifié contre `build_graph`, `src/agent/graph.py` :
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                   rag-ingestion-pipeline                        │
-│  Documents ─▶ Docling ─▶ ChromaDB │ NebulaGraph │ stockage objet│
-└────────────────────────────┬────────────────────────────────────┘
-                             │ réseau Docker : rag-ingestion-pipeline_rag_network
-┌────────────────────────────▼────────────────────────────────────┐
-│                       rag-agent-chat                            │
-│                                                                 │
-│  Streamlit (8501) ◀──▶ FastAPI/LangGraph (8001) ◀──▶ vLLM     │
-│                                │                                │
-│         ChromaDB │ NebulaGraph │ stockage objet (lecture seule) │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Interactions externes** :
-- ChromaDB `:8080` — recherche vectorielle (lecture)
-- NebulaGraph `:9669` — reconstruction contextuelle (lecture)
-- Stockage objet `:9000` — URLs présignées pour images/tableaux (lecture)
-- vLLM `:8000` — inférence LLM (service central, réseau `llm-net`)
-
----
-
-## Vue logique : flux de l'agent
-
-### Graphe LangGraph
-
-```
-          ┌──────────┐
- START ──▶│ rewrite  │  Question de suivi → question autonome
-          └────┬─────┘     (aucun appel LLM sans historique)
-               │
-          ┌────▼─────┐
-          │ retrieve │  Dense ChromaDB + BM25 lexical, fusionnés par RRF
-          └────┬─────┘
-               │
-          ┌────▼─────┐
-          │  rerank  │  Cross-encoder multilingue, dédup par element_id
-          └────┬─────┘     AVANT la troncature au top-K
-               │
-          ┌────▼──────────────────┐
-          │ await_source_selection│  ← INTERRUPT (flux interactif seulement)
-          └────┬──────────────────┘    /answer ne passe pas par là
-               │  selected_element_ids injectés via /chat/resume
-          ┌────▼──────────────────┐
-          │ reconstruct_context   │  NebulaGraph : fil des titres, fenêtre
-          └────┬──────────────────┘  d'éléments, sections voisines, légendes,
-               │                     texte intégral relu dans l'index
-          ┌────▼─────┐
-          │ generate │  vLLM, sources bornées, flux
-          └────┬─────┘
-               │
-          ┌────▼───────────┐
-          │  postprocess   │  Citations [src:ID] → document/ouvrage/page/section
-          └────┬───────────┘  Images [img:ID] → proxy /media
-               │
-        ┌──────▼──────┐
-        │ needs_more? │  Appel d'outil natif search_vectors, ou repli regex
-        └──┬──────────┘
-           │ True (≤ 3x)      │ False
-           └──▶ retrieve      └──▶ END
+```mermaid
+stateDiagram-v2
+    [*] --> rewrite
+    rewrite --> retrieve
+    retrieve --> rerank
+    rerank --> await_source_selection: premier passage (search_count ≤ 1)
+    rerank --> reconstruct_context: itération de la boucle
+    await_source_selection --> reconstruct_context
+    reconstruct_context --> generate
+    generate --> postprocess
+    postprocess --> retrieve: recherche demandée et search_count < MAX_SEARCH_ITERATIONS
+    postprocess --> [*]: sinon
 ```
 
-### Parcours d'une question, et la mémoire entre deux questions
+| Nœud | Ce qu'il fait |
+|---|---|
+| `rewrite` | Rend une question de suivi autonome (`rewrite_question`, sans appel au modèle s'il n'y a pas d'historique ou si `QUERY_REWRITE=false`), puis la traduit dans l'autre langue du corpus (`translate_question`, si `CROSS_LINGUAL_SEARCH=true`) |
+| `retrieve` | Recherche dense et BM25 pour la question et sa traduction, fusion RRF, coupe à `RETRIEVAL_TOP_K` ; incrémente `search_count` |
+| `rerank` | Cross-encoder, déduplication par `element_id`, coupe à `RERANK_TOP_K` |
+| `await_source_selection` | Point d'interruption du flux interactif ; sans effet dans `answer_graph` |
+| `reconstruct_context` | Sélection (humaine, ou les `AUTO_SELECT_TOP_K` premières), puis reconstruction de chaque section par le graphe, par pertinence décroissante |
+| `generate` | Budget de fenêtre, prompt, génération en flux avec l'outil `search_vectors` |
+| `postprocess` | Résolution des `[src:ID]` et `[img:ID]`, restreinte aux éléments réellement soumis ; décide d'une recherche supplémentaire |
 
-Le graphe ci-dessus dit les nœuds ; ces deux diagrammes disent **qui parle à
-qui**, et surtout **où la mémoire conversationnelle entre en jeu** — ce que le
-graphe seul ne montre pas.
+Deux compilations du même graphe, `agent_graph` (interruption avant `await_source_selection`, checkpointer SQLite) et `answer_graph` (ni l'un ni l'autre) : voir [architecture.md](architecture.md#deux-entrées-dans-le-même-graphe).
 
-#### Première question — aucun historique
+Protocole du flux interactif :
+
+1. `POST /chat/start` : `ainvoke` s'arrête avant `await_source_selection` et rend `thread_id` et les sources groupées par document.
+2. `POST /chat/resume` : `aupdate_state(config, {selected_element_ids})`, puis reprise au point d'interruption, en SSE. Chaque nouvelle génération de la boucle agentique commence par un événement `reset`.
+
+## La mémoire de conversation
+
+Le serveur ne garde pas la conversation pour le client. Le frontend tient l'historique et l'envoie à chaque `/chat/start`, dans `chat_history` ; il y ajoute la question et la réponse une fois celle-ci reçue.
 
 ```mermaid
 sequenceDiagram
-    autonumber
     actor U as Utilisateur
-    participant F as Frontend
-    participant API as API /answer
+    participant F as Frontend Streamlit
+    participant A as API
     participant G as Graphe LangGraph
-    participant V as Moteur LLM
-    participant C as ChromaDB + BM25
-    participant N as NebulaGraph
-    U->>F: pose la question
-    F->>API: POST {question, chat_history: [] }
-    API->>G: invoke
-    Note over G: rewrite — historique VIDE :<br/>ne réécrit pas, N'APPELLE PAS le LLM
-    G->>V: traduction de la question
-    V-->>G: version bilingue
-    G->>C: recherche dense + lexicale BM25, fusion RRF
-    C-->>G: passages candidats
-    Note over G: rerank cross-encoder → top-K<br/>puis auto-sélection des documents
-    G->>N: fenêtre parent/enfant autour des ancres
-    N-->>G: sections reconstruites
-    G->>V: prompt + outil search_vectors (flux)
-    V-->>G: jetons, et parfois un appel d'outil
-    Note over G,C: si le modèle demande une recherche de plus :<br/>retour à retrieve, PLAFOND MAX_SEARCH_ITERATIONS
-    G-->>API: réponse + citations [src:ID]
-    API-->>F: réponse + sources
-    Note over F: le frontend AJOUTE la question<br/>et la réponse à SON historique
-    F-->>U: affiche
-```
-
-#### Deuxième question — c'est ici que la mémoire agit
-
-« Et pour les systèmes à risque limité ? » — une question qui ne veut rien dire
-seule.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor U as Utilisateur
-    participant F as Frontend
-    participant API as API /answer
-    participant G as Graphe LangGraph
-    participant V as Moteur LLM
-    participant C as ChromaDB + BM25
-    U->>F: pose la question de suivi
-    Note over F: c'est LE CLIENT qui détient l'historique
-    F->>API: POST {question, chat_history: derniers messages}
-    Note over API: tronque à MAX_HISTORY_MESSAGES
-    API->>G: invoke + historique
-    rect rgb(255,237,213)
-    Note over G,V: MÉMOIRE, USAGE N°1 — rendre la question autonome
+    participant V as vllm-central
+    U->>F: question de suivi
+    F->>A: POST /chat/start {question, chat_history (6 derniers messages)}
+    A->>G: ainvoke
     G->>V: rewrite_question(question, historique)
-    V-->>G: question complète, autoportante
-    end
-    G->>C: la recherche porte sur la question RÉÉCRITE
-    C-->>G: les bons passages
-    rect rgb(255,237,213)
-    Note over G,V: MÉMOIRE, USAGE N°2 — situer la réponse
-    G->>V: système + HISTORIQUE (coupé par TOURS) + sources
-    V-->>G: réponse qui tient compte de l'échange
-    end
-    G-->>API: réponse + citations
-    API-->>F: réponse
-    F-->>U: affiche
+    V-->>G: question autonome
+    G->>V: translate_question(question autonome)
+    G->>G: retrieve, rerank sur la question autonome
+    G-->>A: interruption avant await_source_selection
+    A-->>F: thread_id + sources groupées par document
+    U->>F: coche les sources
+    F->>A: POST /chat/resume {thread_id, selected_element_ids, stream}
+    A->>G: aupdate_state puis reprise
+    G->>V: système + historique (coupé par tours) + sources
+    V-->>G: jetons en flux, parfois un appel d'outil
+    G-->>A: réponse, citations, images
+    A-->>F: événements SSE
+    F->>F: ajoute question et réponse à son historique
 ```
-
-#### Où vit la mémoire, et où elle ne vit pas
 
 | | |
 |---|---|
-| **Chez le client** | Le frontend garde l'historique et le renvoie dans chaque requête. **Le serveur est sans état là-dessus** : sans historique reçu, l'agent repart de zéro. |
-| **Deux points d'entrée** | La **réécriture** (sans elle, la recherche chercherait littéralement « et pour les systèmes à risque limité »), puis le **prompt de génération**. |
-| **Bornes** | `MAX_HISTORY_MESSAGES`, appliqué **côté serveur** même si le client en envoie plus. La coupe au budget porte sur des **tours**, pas des messages — sinon une réponse d'assistant survit sans la question qui l'a provoquée, et le gabarit de chat reçoit une alternance cassée (`fit_history`). |
-| **`checkpoints.sqlite` n'est PAS cette mémoire** | Il persiste une session **suspendue** entre `/chat/start` et `/chat/resume`, quand l'utilisateur choisit ses sources à la main. Sur disque pour survivre à un redémarrage. |
-| **`usage.sqlite` non plus** | Journal des interactions, pour la mesure. **Jamais relu** pour répondre. |
-| **Une 3ᵉ mémoire, interne à UNE question** | La boucle agentique : le modèle réclame lui-même une recherche de plus, et le graphe reboucle — plafonné par `MAX_SEARCH_ITERATIONS`. |
+| Chez le client | Le frontend garde l'historique ; sans historique reçu, l'agent repart de zéro |
+| Deux usages | La réécriture de la question, puis le prompt de génération |
+| Bornes | `MAX_HISTORY_PAYLOAD` (50) messages acceptés par requête, `MAX_HISTORY_MESSAGES` (6) retenus ; la coupe au budget porte sur des tours entiers (`fit_history`) ; un message `system` venu du client est refusé |
+| `checkpoints.sqlite` | Ce n'est pas cette mémoire : il garde une session suspendue entre `/chat/start` et `/chat/resume` |
+| `usage.sqlite` | Journal de mesure, jamais relu pour répondre |
+| Dans une seule question | La boucle agentique : le modèle réclame une recherche de plus, plafonnée par `MAX_SEARCH_ITERATIONS` |
 
-### Deux compilations du même graphe
+## Les modules
 
-| Compilation    | Interruption                                 | Checkpointer | Consommé par |
-|----------------|----------------------------------------------|--------------|--------------|
-| `agent_graph`  | `interrupt_before=["await_source_selection"]` | SQLite       | `/chat/start` + `/chat/resume` |
-| `answer_graph` | aucune                                       | aucun        | `/answer` |
+| Module | Responsabilité |
+|---|---|
+| `src/agent/graph.py` | Nœuds, arêtes, compilation, résolution des citations |
+| `src/agent/state.py` | `AgentState`, l'état passé de nœud en nœud |
+| `src/agent/retriever.py` | Recherche dense et lexicale, reranking, déduplication, texte intégral, garde du modèle d'embedding |
+| `src/agent/lexical.py` | Index BM25 et fusion RRF |
+| `src/agent/graph_context.py` | Reconstruction par NebulaGraph : fil des titres, fenêtre, sections voisines, légendes |
+| `src/agent/llm.py` | Réécriture, traduction, budget de fenêtre, génération, outil `search_vectors` |
+| `src/agent/dialecte_llm.py` | Forme unique des requêtes au serveur d'inférence |
+| `src/agent/flux_llm.py` | Lecture du flux de génération et des appels d'outil fragmentés |
+| `src/agent/repli_outil.py` | Repérage d'un appel d'outil écrit dans la prose |
+| `src/agent/stockage_objet.py` | Lecture des objets médias, seul site qui importe la bibliothèque cliente S3 |
+| `src/agent/sessions.py` | Registre durable des sessions et purge |
+| `src/agent/usage.py` | Capture d'usage |
+| `src/agent/chronometrie.py` | Partition du temps par étage |
+| `src/agent/settings.py` | Configuration `pydantic-settings`, seule source de vérité des défauts |
+| `src/api/main.py` | Les onze routes, CORS, clé d'API, `/health`, branchement de la capture |
+| `src/api/schemas.py` | Modèles Pydantic des requêtes et réponses, bornes d'entrée |
+| `src/api/identite_du_code.py` | Le sha du code gravé dans l'image |
+| `src/frontend/app.py` | Interface en trois phases : question, sélection des sources, réponse |
 
-Le flux interactif attend un humain : il n'est pas rejouable en batch. Sans
-`answer_graph`, aucune campagne d'évaluation ne pourrait mesurer le système.
+## L'état de l'agent
 
-**Protocole du flux interactif** :
-
-1. `POST /chat/start` — `ainvoke(initial_state, config)` s'arrête avant
-   `await_source_selection`, retourne `thread_id` et les groupes de sources.
-2. `POST /chat/resume` — `aupdate_state(config, {selected_element_ids})` puis
-   `ainvoke(None, config)` reprend au point d'interruption.
-
-Le checkpointer écrit dans un fichier SQLite monté sur le volume
-`rag_agent_state` : une session en attente de sélection survit au redémarrage
-de `agent-api`, et plusieurs workers uvicorn partagent leurs threads. Repli en
-mémoire si le fichier est inaccessible. Les sessions sont purgées par âge
-(`SESSION_TTL_SECONDS`) et par nombre (`MAX_LIVE_SESSIONS`) : sans purge, la
-persistance ne ferait que déplacer la fuite sur le disque.
-
-Le registre de cette purge vit **dans la base du checkpointer** (table
-`sessions_agent`), et non en mémoire : un registre de processus n'atteint que
-les sessions qu'il a lui-même créées, et tout ce qui précédait le dernier
-redémarrage restait sur le disque indéfiniment. Aucune purge n'a lieu au
-démarrage — ce serait détruire la raison d'être du fichier — mais les sessions
-qu'il porte sans registre y sont adoptées, donc redeviennent purgeables. Détail
-dans [architecture.md](architecture.md#purge-durable-des-sessions), état publié
-par `GET /health` sous `sessions`.
-
----
-
-## Vue applicative : composants
-
-### `src/agent/`
-
-| Module              | Responsabilité                                                  |
-|---------------------|-----------------------------------------------------------------|
-| `graph.py`          | Nœuds, arêtes, conditions, compilation du graphe, résolution des citations |
-| `graph_context.py`  | Reconstruction via NebulaGraph : fil des titres, fenêtre d'éléments, sections voisines, légendes |
-| `llm.py`            | Client du moteur (dialecte OpenAI, via `dialecte_llm`), réécriture et traduction de requête, budget de contexte, outil `search_vectors` |
-| `retriever.py`      | Recherche dense + lexicale, reranking, déduplication, texte intégral |
-| `lexical.py`        | Index BM25 en mémoire et fusion Reciprocal Rank Fusion          |
-| `stockage_objet.py` | Lecture des objets du stockage objet servis par le proxy `/media` |
-| `state.py`          | `AgentState` — TypedDict LangGraph (question, chunks, contextes, réponse, chronométrage) |
-| `settings.py`       | Configuration via `pydantic-settings` (lecture `.env`)          |
-| `usage.py`          | Capture d'usage : questions posées, sources proposées et décochées, réponses, appréciations ([capture_usage.md](capture_usage.md)) |
-
-### `src/api/`
-
-| Module       | Responsabilité                               |
-|--------------|----------------------------------------------|
-| `main.py`    | Endpoints FastAPI (11 routes), middleware CORS, branchement de la capture d'usage |
-| `schemas.py` | Modèles Pydantic v2 (requêtes et réponses)   |
-
-### `src/frontend/`
-
-| Module  | Responsabilité                                                           |
-|---------|--------------------------------------------------------------------------|
-| `app.py`| Interface Streamlit 3 phases : saisie question → sélection sources → affichage réponse |
-
----
-
-## Vue données
-
-### Contrat de lecture ChromaDB
-
-- Collection : `rag_documents`
-- Embedding : `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions) — **doit être identique à l'ingestion**. Ce document a longtemps annoncé `all-MiniLM-L6-v2`, un modèle anglais : c'est faux depuis la réingestion multilingue, et c'est la plus coûteuse des fausses valeurs possibles — un embedder qui ne correspond pas à celui de l'ingestion rend des passages au hasard. Cette phrase se poursuivait par « sans exception, sans log et sans sonde » : **ce n'est plus vrai depuis le 4 septembre 2026**, l'agent confronte son réglage à l'estampille de la collection et refuse de chercher en `503` — y compris quand l'estampille est absente. Voir `axes_amelioration.md` §4.4. La valeur qui s'exécute est dans `settings.py`
-- Métadonnées disponibles par chunk : `element_id`, `graph_node_id`, `filename`, `collection`, `source_path`, `section_title`, `language`, `depth`, `page_no`, `media_url`, `chunk_index`, `chunk_count`. Ce que l'agent fait de chacune est dans [stores.md](stores.md), qui fait référence — `source_path` est l'**identité** du document, et non `filename`
-- Paramètres de retrieval : `RETRIEVAL_TOP_K=50` (candidats après fusion) → `RERANK_TOP_K=10` (après reranking). La table des paramètres de ce document disait déjà 50 ; cette ligne était restée à 20, la valeur d'avant l'élargissement du vivier
-- **Aucun filtre de pertinence.** `rerank` rend les `RERANK_TOP_K` mieux classées quel que soit leur score : le système n'a pas de seuil, et une question hors corpus reçoit dix sources comme les autres. Ce document a décrit un `RERANK_MIN_SCORE=0.0` qui n'a jamais existé dans `settings.py` — l'affirmation est retirée, le manque est ouvert dans [axes_amelioration.md](axes_amelioration.md) avec les deux autres manifestations du même problème (badge de pertinence purement relatif, `min_length=1` sur la sélection)
-- Situer le passage dans l'interface de sélection ne coûte **aucun** appel au graphe : le titre de section est lu dans la métadonnée `section_title` de ChromaDB, portée par `ChunkResult` et affichée telle quelle. Ce document décrivait un enrichissement par NebulaGraph via `get_section_text`, produisant un champ `section_header_text` : ces deux symboles n'existent nulle part dans `src/`. Le graphe n'est traversé qu'après la sélection, par `reconstruct_section`
-
-### Contrat de lecture NebulaGraph
-
-- Space : `rag_space`
-- Tags lus : `Document`, `SectionHeader`, `Paragraph`, `Table`, `Picture`, `Code`, `Formula`, `Caption`, `ListItem`, `Footnote`, `PageHeader`, `PageFooter`
-- Propriétés lues : `label`, `text`, `media_url`, `page_no`
-- Edge utilisé : `PARENT_OF(sequence)` — traversal ascendant (`REVERSELY`) et descendant. `sequence` porte **trois réserves de lecture** qui décident de la forme du fenêtrage : site canonique, [stores.md](stores.md#les-trois-réserves-de-lecture-de-sequence)
-- Requête propriétés : `FETCH PROP ON * "vid"` (1 requête pour tous les tags) + fallback `FETCH PROP ON Document` pour les nœuds racines
-- Requête ascendante : `GO FROM v OVER PARENT_OF REVERSELY YIELD src(edge) AS parent_id`
-- Requête descendante : `GO FROM section_id OVER PARENT_OF YIELD dst(edge) AS child_id ... | ORDER BY seq`
-- Fenêtrage du contexte : `_window_around` restreint les enfants de la section à `CONTEXT_WINDOW_BEFORE` + `CONTEXT_WINDOW_AFTER` + 1 éléments (**13** par défaut), centrés sur l'`element_id` ciblé, et par **position de liste** — jamais par valeur de `sequence`, pour les raisons données dans [stores.md](stores.md#les-trois-réserves-de-lecture-de-sequence). Quand l'ancre est introuvable dans la liste — elle est la section elle-même — c'est la tête de section qui est prise.
-
-  > Ce document a décrit un `_MAX_CONTEXT_ELEMENTS=12` et un filtrage des éléments Picture/Table/SectionHeader avant fenêtrage pour les nœuds Document racine. **Ni l'un ni l'autre n'existe** : `grep -rn "_MAX_CONTEXT_ELEMENTS" src/` ne rend rien (`mesuré` le 3 septembre 2026), et `_window_around` ne filtre sur aucun tag. La borne réelle est celle des deux réglages ci-dessus.
-
-**Note sur `REVERSELY`** : `YIELD src(edge)` retourne l'origine de l'arête originale (le parent), pas la destination. Utiliser `dst(edge)` retournerait le nœud de départ lui-même.
-
-### Contrat de lecture du stockage objet
-
-- Bucket : `documents`
-- Accès : URLs présignées via `stockage_objet.get_presigned_url(media_url)` (TTL 1 heure par défaut)
-- Les `media_url` sont stockées dans NebulaGraph comme chemin relatif : `bucket/path/to/image.png`
-
-### État de l'agent (`AgentState`)
-
-Recopié de `src/agent/state.py`, qui fait foi. L'extrait avait divergé : il
-omettait la question réécrite, sa traduction, les deux bornes de sélection et le
-nombre de sources écartées.
+Extrait de `src/agent/state.py`, qui fait foi :
 
 ```python
 class AgentState(TypedDict):
@@ -271,7 +116,7 @@ class AgentState(TypedDict):
     selected_element_ids: list[str]     # sélection humaine, vide pour /answer
     max_sources: int | None             # None = AUTO_SELECT_TOP_K
     top_k: int | None                   # None = RETRIEVAL_TOP_K
-    enriched_contexts: list[SectionContext]   # sections CANDIDATES
+    enriched_contexts: list[SectionContext]   # sections candidates
     submitted_contexts: list[SectionContext]  # celles que le budget a retenues
     response: str
     citations: list[Citation]
@@ -284,268 +129,107 @@ class AgentState(TypedDict):
     _metadata: dict                     # chronométrage par étage
 ```
 
-Deux champs demandent un mot, parce qu'ils existent pour la MESURE et non pour la
-réponse. `enriched_contexts` porte les sections reconstruites, `submitted_contexts`
-celles que `fit_prompt` a réellement retenues — tronquées si elles l'ont été. Une
-métrique de précision du contexte calculée sur les premières mesure une intention ;
-celle qui compte mesure ce qui a été payé en tokens. `generation_measure` porte les
-décomptes de tokens rendus par le serveur d'inférence : ils ne sortaient qu'en
-journal, donc personne ne les avait jamais observés.
+`enriched_contexts` et `submitted_contexts` existent pour la mesure : une précision du contexte calculée sur les candidates mesurerait une intention, pas ce qui a été payé en tokens.
 
----
+## La stratégie RAG
 
-## Vue IA générative
+1. **Réécriture** de la question de suivi, dans sa langue d'origine.
+2. **Recherche hybride et translingue** : jusqu'à quatre classements (dense et BM25, pour la question et sa traduction), `FETCH_K` candidats chacun, fondus par RRF pondéré (`RRF_K`, `TRANSLATION_WEIGHT`).
+3. **Reranking** par `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, multilingue. Le score montré à l'utilisateur est la sigmoïde du logit. Aucun seuil de pertinence : une question hors corpus reçoit `RERANK_TOP_K` sources comme les autres.
+4. **Sélection** : l'utilisateur coche, parmi des sources groupées par document ; sans lui, les `AUTO_SELECT_TOP_K` premières.
+5. **Reconstruction** : fil des titres jusqu'au `Document`, fenêtre de `CONTEXT_WINDOW_BEFORE` + `CONTEXT_WINDOW_AFTER` + 1 éléments autour de l'ancre, découpée par position ([stores.md](stores.md#les-trois-réserves-de-lecture-de-sequence)), `ADJACENT_SECTION_ELEMENTS` éléments des sections voisines, légendes des illustrations, texte intégral relu dans l'index.
+6. **Génération citée** : chaque élément du prompt porte son marqueur `[src:ELEMENT_ID]`, et le modèle ne peut citer que de vrais identifiants.
+7. **Post-traitement** : `[src:…]` résolus vers ouvrage, document, page et section, y compris dans un crochet à plusieurs identifiants ; un identifiant inventé est ignoré. Les illustrations affichées sont celles des sections d'où viennent les citations, au plus `MAX_IMAGES`.
 
-### Stratégie RAG
+Le modèle d'embedding est `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions), identique à celui de l'ingestion et vérifié à chaque recherche ([stores.md](stores.md#le-modèle-dembedding-doit-être-le-même-des-deux-côtés)). Cette documentation a longtemps annoncé `all-MiniLM-L6-v2`, un modèle anglais : c'était faux depuis la réingestion multilingue (§4.4 du [registre](axes_amelioration.md)).
 
-Le projet implémente un **RAG structurel, hybride et citable** :
+## Les prompts
 
-1. **Réécriture de requête** — la question de suivi est rendue autonome avant
-   l'encodage. Sans historique, la question est déjà autonome : aucun appel LLM.
-2. **Recherche hybride et translingue** — la question est traduite dans l'autre
-   langue du corpus, et quatre classements entrent dans la fusion : dense et
-   lexical, pour la question et pour sa traduction. `FETCH_K` candidats chacun,
-   fusionnés par Reciprocal Rank Fusion — sur les **rangs**, car une distance
-   cosine et un score BM25 ne vivent pas sur la même échelle.
+Versionnés dans `prompts/`, montés en lecture seule dans le conteneur (`PROMPTS_DIR`) ; hors conteneur, repli sur le dossier du dépôt. Leur condensat entre dans l'empreinte de configuration de la capture d'usage.
 
-   Mesuré sur 130 questions : sans traduction, le rappel translinguistique
-   plafonne à 0,806 ; avec, il atteint **1,000**. La recherche lexicale seule ne
-   trouvait alors *rien* — deux langues ne partagent pas leurs mots.
-3. **Reranking** — cross-encoder `mmarco-mMiniLMv2-L12-H384-v1`, multilingue.
-   Déduplication par `element_id` avant la troncature au top-K. Le score exposé
-   à l'utilisateur est la **sigmoïde** du logit : le brut est non borné et
-   l'afficher comme une similarité induisait en erreur.
-4. **Sélection** — interactive (l'utilisateur coche, sources groupées par
-   document avec ouvrage, section, langue et pertinence) ou automatique
-   (`AUTO_SELECT_TOP_K` mieux classées) pour `/answer`.
-5. **Enrichissement structurel** — NebulaGraph reconstruit le fil des titres
-   jusqu'au document, une fenêtre d'éléments autour de l'ancre, la fin de la
-   section précédente et le début de la suivante, et rattache aux illustrations
-   la légende que l'arête `DESCRIBES` désigne. Le texte intégral est relu dans
-   l'index quand celui du graphe frôle sa troncature.
-6. **Génération citée** — le LLM reçoit chaque élément suivi de son marqueur
-   `[src:ELEMENT_ID]` et ne peut donc citer que de vrais identifiants. C'est du
-   *citation anchoring* : ancrer les identifiants dans le prompt réduit les
-   citations inventées, là où une extraction post-hoc doit deviner.
-7. **Post-processing** — les `[src:ID]` sont résolus vers ouvrage, document,
-   page et section ; les illustrations vers le proxy `/media`. Un identifiant
-   inventé par le modèle est simplement ignoré.
+| Fichier | Rôle |
+|---|---|
+| `system.txt` | Règles : citer chaque affirmation, ne rien inventer, admettre l'ignorance, appeler l'outil plutôt que répondre partiellement |
+| `answer_with_context.j2` | Injecte les sections reconstruites et la question |
+| `rewrite_query.j2` | Rend une question de suivi autonome |
+| `translate_query.j2` | Traduit la question entre français et anglais |
 
-   Deux subtilités, apprises à l'écran :
+## La boucle agentique
 
-   Le modèle groupe volontiers plusieurs sources dans un seul crochet —
-   `[src:aaa, src:bbb]`. Un motif exigeant le crochet fermant juste après
-   l'identifiant n'en résolvait aucune, et les marqueurs restaient affichés
-   bruts. Le bloc entier est capturé, puis tous les identifiants en sont
-   extraits.
+`search_vectors(query)` est déclaré comme outil natif (`NATIVE_TOOL_CALLING=true`) : le modèle répond par un `tool_calls` structuré, capté dans le flux et jamais montré à l'utilisateur. Si le modèle en demande plusieurs, seul le premier est servi. La sous-question repart dans `retrieve`, sans traduction ni réécriture, et le rerank passe directement à la reconstruction ; les nouvelles sources s'ajoutent aux précédentes. La boucle s'arrête sans appel d'outil, ou à `MAX_SEARCH_ITERATIONS` (3).
 
-   Le modèle n'émet presque jamais `[img:ID]` : une illustration n'a pas de
-   texte, il ne peut donc ni juger sa pertinence ni deviner qu'il faut la
-   montrer. Ce sont les **illustrations des sections d'où viennent les
-   citations** qui sont affichées — si une affirmation est tirée d'une section,
-   la figure de cette section illustre ce dont on parle. Borné par `MAX_IMAGES`.
+Le repli pour un modèle qui écrit l'appel dans sa prose a un seul site, `lire_et_retirer` de `src/agent/repli_outil.py`, qui rend d'un même passage la sous-question et le texte nettoyé. Formes reconnues, mesurées le 15 septembre 2026 sur ce que les modèles écrivent réellement :
 
-### Prompts
-
-Versionnés dans `prompts/`, chargés dynamiquement. Le dossier configuré est
-celui de l'image Docker ; hors conteneur, repli sur celui du dépôt.
-
-| Fichier                    | Rôle                                                        |
-|----------------------------|-------------------------------------------------------------|
-| `system.txt`               | Règles : citer chaque affirmation, ne rien inventer, admettre l'ignorance, appeler l'outil plutôt que répondre partiellement |
-| `answer_with_context.j2`   | Injecte les contextes enrichis et la question               |
-| `rewrite_query.j2`         | Rend une question de suivi autonome                         |
-
-### Boucle agentique
-
-`search_vectors` est déclaré comme **outil natif** : le modèle répond par
-un `tool_calls` structuré, capté au fil du flux et jamais rendu à l'utilisateur.
-Le repérage de l'appel dans la prose reste actif en **second rideau**, pour les
-modèles qui n'en font pas ; le log indique lequel des deux canaux a parlé.
-Limite : `MAX_SEARCH_ITERATIONS`.
-
-**Le second rideau a UN site : `src/agent/repli_outil.py`.** `lire_et_retirer`
-rend d'un seul passage la sous-question écrite dans la prose ET le texte
-débarrassé de l'appel. Les deux sortaient auparavant de deux expressions
-régulières recopiées dans `graph.py`, libres de diverger — et la divergence
-n'est pas un détail de forme : celle qui reconnaît sans nettoyer affiche la
-syntaxe à l'utilisateur, celle qui nettoie sans reconnaître efface la demande
-sans jamais la servir. `tests/unit/test_coherence_depot.py` rougit si un second
-site apparaît.
-
-**Les formes reconnues sont MESURÉES, pas supposées.** Le motif d'origine
-exigeait une parenthèse immédiatement suivie d'un guillemet — la forme
-positionnelle — et les deux moteurs du poste écrivent aussi la forme nommée.
-`mesuré` le 15 septembre 2026 entre 22:35 et 22:50 UTC, en lecture, une requête
-à la fois, sans déclarer l'outil nativement :
-
-Deux moteurs étaient alors servis, et les quatre formes sont gardées ensemble :
-c'est le **modèle** qui les écrit, pas le serveur qui le sert.
-
-| forme écrite par le modèle |
+| Forme |
 |---|
 | `search_vectors("…")` |
 | `search_vectors(query="…")` |
 | `search_vectors(sous_question="…")` |
 | `search_vectors(sous-question="…")` |
 
-Le nom d'argument n'est pas comparé à une liste : trois noms désignent la même
-place, et un modèle en inventera un quatrième. C'est la FORME qui est exigée —
-un identifiant, un `=`, une chaîne entre guillemets — parce que c'est elle qui
-distingue un appel d'une phrase. L'exigence de la parenthèse ET des guillemets
-est ce qui empêche le rideau d'attraper « Je vais lancer une recherche
-complémentaire avec l'outil `search_vectors`. », que le modèle écrit sans jamais
-appeler l'outil (mesuré, deux essais sur deux) : un motif plus large ne rend pas
-le rideau plus solide, il lui fait inventer des recherches.
+Le nom d'argument n'est pas comparé à une liste : c'est la forme qui est exigée (un identifiant, `=`, une chaîne entre guillemets). Exiger la parenthèse et les guillemets évite d'attraper une phrase qui nomme l'outil sans l'appeler. Le nettoyage du texte ne dépend pas du canal : un appel natif doublé dans la prose est retiré aussi.
 
-**Le nettoyage ne dépend pas du canal.** Il était attaché au repli ; un modèle
-qui fait l'appel natif ET l'écrit dans son texte laissait donc la seconde moitié
-à l'écran.
+## Le budget de contexte
 
-### Budget de contexte
+`LLM_NUM_CTX` borne ce que le client envoie ; la fenêtre du serveur est fixée à son lancement et publiée par `/health` (`moteur_llm.fenetre_servie`). Le budget de sources vaut la fenêtre, moins la génération, moins tout ce que le prompt contient déjà. Formule, mesures et ordre des coupes : [llm.md](llm.md#le-budget-de-contexte).
 
-`LLM_NUM_CTX` n'est **pas** envoyé au serveur : le dialecte OpenAI n'a pas de
-champ de fenêtre, et celle de `vllm-central` est fixée à son lancement
-(`--max-model-len 32768`). Il borne ce que le **client** s'autorise à envoyer, et
-`/health` publie en regard la fenêtre réellement servie (`fenetre_servie`), de
-sorte qu'un écart entre les deux se voie au lieu de se deviner.
+## Les réglages
 
-Le budget de sources vaut la fenêtre **moins la génération, moins tout ce que le
-prompt contient déjà** : prompt système, gabarit rendu, historique retenu,
-encadrement des sources. L'historique n'y entrait pas — un forfait de 512 tokens
-en tenait lieu — et le prompt dépassait `num_ctx` dès le troisième tour d'une
-conversation. Le serveur **refuse** alors la requête : HTTP 400, « maximum
-context length is 32768 tokens » (`mesuré` le 18 septembre 2026 à 12:35 UTC sur
-`vllm-central`). Le dépassement est donc bruyant, et cette borne existe pour ne
-pas l'atteindre — l'ancien moteur, à sa place, tronquait par le **début** et
-jetait le message système et ses règles de citation, en silence.
+Défauts lus dans `src/agent/settings.py`, qui fait foi ; `.env.example` porte la liste complète des variables.
 
-Ce qui dépasse est écarté **ici**, avec un log qui dit combien et pourquoi ;
-`prompt_eval_count`, rendu par le serveur dans l'événement d'usage du flux, confronte
-l'estimation au décompte réel. Formule, chiffres et lecture des logs dans
-[llm.md](llm.md).
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `LLM_HOST` | `http://vllm-central:8000` | Serveur d'inférence |
+| `LLM_MODEL` | `google/gemma-4-E4B-it-qat-w4a16-ct` | Modèle de génération |
+| `LLM_TEMPERATURE` | `0.1` | Température |
+| `LLM_MAX_TOKENS` | `4096` | Plafond de génération |
+| `LLM_NUM_CTX` | `8192` | Budget de prompt du client |
+| `LLM_THINKING` | `false` | Raisonnement, désactivé par requête |
+| `HISTORY_WINDOW_SHARE` | `0.25` | Part de la fenêtre laissée à l'historique |
+| `TRUNCATION_FLOOR_SHARE` | `1/3` | Part minimale d'une source tronquée |
+| `TORCH_DEVICE` | `cuda` | Périphérique de l'embedder et du reranker ([gpu_cuda.md](gpu_cuda.md)) |
+| `TORCH_MAX_CONCURRENCY` | `4` | Requêtes admises en même temps dans un étage torch |
+| `EMBEDDING_MODEL_NAME` | `paraphrase-multilingual-MiniLM-L12-v2` | Modèle d'embedding, identique à l'ingestion |
+| `RERANK_MODEL` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | Cross-encoder |
+| `HYBRID_SEARCH` | `true` | BM25 en plus du dense |
+| `FETCH_K` | `50` | Candidats par moteur et par requête |
+| `RRF_K` | `60` | Amortissement de la fusion RRF |
+| `RETRIEVAL_TOP_K` | `50` | Candidats gardés après fusion |
+| `CROSS_LINGUAL_SEARCH` | `true` | Cherche aussi avec la traduction |
+| `TRANSLATION_WEIGHT` | `1.0` | Poids de la traduction dans la fusion |
+| `RERANK_TOP_K` | `10` | Éléments distincts gardés après reranking ; borne de `max_sources` |
+| `AUTO_SELECT_TOP_K` | `3` | Sources reconstruites sans sélection humaine |
+| `QUERY_REWRITE` | `true` | Réécriture des questions de suivi |
+| `NATIVE_TOOL_CALLING` | `true` | Outil natif plutôt que repli dans la prose |
+| `MAX_SEARCH_ITERATIONS` | `3` | Plafond de la boucle agentique |
+| `CONTEXT_WINDOW_BEFORE`, `CONTEXT_WINDOW_AFTER` | `6`, `6` | Éléments retenus autour de l'ancre |
+| `ADJACENT_SECTION_ELEMENTS` | `3` | Éléments repris des sections voisines (0 désactive) |
+| `NEIGHBOUR_SECTION_UNCLES` | `false` | Chercher les sections voisines un niveau plus haut |
+| `MAX_IMAGES` | `4` | Illustrations affichées au plus |
+| `FULL_TEXT_FROM_VECTORS` | `true` | Texte intégral relu dans l'index |
+| `GRAPH_TEXT_TRUNCATION` | `2000` | Doit suivre le `graph_text_max_chars` de l'ingestion |
+| `NEBULA_TIMEOUT_MS` | `15000` | Délai d'une requête au graphe |
+| `RESTRICT_MEDIA_TO_GRAPH` | `true` | Le proxy ne sert que les objets cités par le graphe |
+| `CHECKPOINT_DB_PATH` | `/app/data/checkpoints.sqlite` | Sessions et registre de leur purge ; vide = en mémoire |
+| `SESSION_TTL_SECONDS` | `3600` | Âge au-delà duquel une session est purgée |
+| `MAX_LIVE_SESSIONS` | `200` | Sessions gardées au plus |
+| `USAGE_CAPTURE` | `true` | Capture d'usage ([capture_usage.md](capture_usage.md)) |
+| `USAGE_DB_PATH` | `/app/data/usage.sqlite` | Même volume que les sessions |
+| `API_KEY` | vide | Vide = aucune authentification ([SECURITY.md](SECURITY.md)) |
+| `CORS_ORIGINS` | `http://localhost:8506,http://localhost:8501` | Origines autorisées |
+| `LOG_LEVEL` | `INFO` | Un `logger.debug` est invisible à ce niveau |
 
-### Paramètres
+Adresses des stores et clés du stockage objet : [stores.md](stores.md). Le `.env` d'un poste surcharge ces défauts ; `/health` publie ce qui est en vigueur pour le moteur et le périphérique.
 
-| Paramètre                  | Défaut | Rôle                                              |
-|----------------------------|--------|---------------------------------------------------|
-| `LLM_TEMPERATURE`          | `0.1`  | Faible, pour des réponses factuelles              |
-| `LLM_MAX_TOKENS`           | `4096` | Plafond de génération (`num_predict`)             |
-| `LLM_NUM_CTX`              | `8192` | Fenêtre demandée par requête                      |
-| `LLM_THINKING`             | `false`| Raisonnement de Gemma 4, coûteux en CPU           |
-| `HYBRID_SEARCH`            | `true` | BM25 en plus du dense                             |
-| `FETCH_K`                  | `50`   | Candidats par moteur avant fusion                 |
-| `RRF_K`                    | `60`   | Amortissement RRF                                 |
-| `RETRIEVAL_TOP_K`          | `50`   | Candidats conservés après fusion, soumis au reranking |
-| `CROSS_LINGUAL_SEARCH`     | `true` | Cherche aussi dans la traduction de la question    |
-| `TRANSLATION_WEIGHT`       | `1.0`  | Poids de la traduction dans la fusion RRF          |
-| `RERANK_TOP_K`             | `10`   | Éléments distincts conservés après reranking      |
-| `QUERY_REWRITE`            | `true` | Réécriture des questions de suivi                 |
-| `NATIVE_TOOL_CALLING`      | `true` | Outil natif plutôt que repli par regex            |
-| `AUTO_SELECT_TOP_K`        | `3`    | Sources reconstruites sans sélection humaine      |
-| `CONTEXT_WINDOW_BEFORE/AFTER` | `6`  | Éléments retenus autour de l'ancre                |
-| `ADJACENT_SECTION_ELEMENTS`| `3`    | Éléments repris des sections voisines (0 désactive) |
-| `MAX_IMAGES`               | `4`    | Illustrations affichées au maximum dans une réponse |
-| `FULL_TEXT_FROM_VECTORS`   | `true` | Texte intégral relu dans l'index                  |
-| `MAX_SEARCH_ITERATIONS`    | `3`    | Plafond de la boucle agentique                    |
-| `GRAPH_TEXT_TRUNCATION`    | `2000` | Doit suivre le `graph_text_max_chars` de l'ingestion |
-| `HISTORY_WINDOW_SHARE`     | `0.25` | Part de la fenêtre de prompt laissée à l'historique — forfait, cf. [llm.md](llm.md) |
-| `CHECKPOINT_DB_PATH`       | `/app/data/checkpoints.sqlite` | Sessions LangGraph **et** registre de leur purge. Vide = checkpointer en mémoire, sessions perdues au redémarrage |
-| `SESSION_TTL_SECONDS`      | `3600` | Âge au-delà duquel une session est purgée du checkpointer |
-| `MAX_LIVE_SESSIONS`        | `200`  | Nombre de sessions gardées ; l'excédent le plus ancien est purgé |
-| `USAGE_CAPTURE`            | `true` | Capture d'usage, cf. [capture_usage.md](capture_usage.md). **Sans effet sur la purge des sessions**, qui ne s'appuie pas sur cette base |
-| `USAGE_DB_PATH`            | `/app/data/usage.sqlite` | Même volume que le checkpointer |
-| `RESTRICT_MEDIA_TO_GRAPH`  | `true` | Le proxy `/media` ne sert que les objets référencés par le graphe |
-| `NEBULA_TIMEOUT_MS`        | `15000`| Sans lui, une requête lente du graphd fige la requête FastAPI qui l'attend |
-| `API_KEY` / `CORS_ORIGINS` | vide / `localhost` | Vide = aucune authentification, acceptable en local seulement |
-| `LOG_LEVEL`                | `INFO` | Attention : un `logger.debug` est invisible à ce niveau, et c'est ainsi qu'une purge en panne est restée cachée |
+## Les limites connues
 
-La table n'est pas exhaustive et ne prétend pas l'être : `.env.example` est la
-liste complète, et `settings.py` la seule source de vérité. Aucun paramètre
-n'existe ici qui ne s'y trouve — c'est la règle qu'un `RERANK_MIN_SCORE`
-fantôme avait enfreinte.
-
----
-
-## Vue déploiement
-
-### Services Docker
-
-```
-docker-compose.yml
-│
-├── agent-api       (Dockerfile.agent — python:3.12-slim multi-stage)
-│   ├── Ports       : 8011:8000
-│   ├── Volumes     : ./prompts:/app/prompts:ro
-│   ├── Réseaux     : rag_network + llm-net + internal
-│   └── Healthcheck : curl /health
-│
-└── frontend        (Dockerfile.frontend — python:3.12-slim multi-stage)
-    ├── Ports       : 8501:8501
-    ├── Réseaux     : internal uniquement
-    └── Depends     : agent-api (healthy)
-```
-
-### Réseaux
-
-| Réseau      | Type     | Rôle                                                     |
-|-------------|----------|----------------------------------------------------------|
-| `rag_network` | external | Réseau partagé avec `rag-ingestion-pipeline` — accès ChromaDB, NebulaGraph, stockage objet |
-| `internal`  | bridge   | Réseau interne : Streamlit → agent-api                    |
-
-Le frontend n'est pas connecté au réseau `rag_network` (il ne communique qu'avec `agent-api`).
-
-### Ordre de démarrage
-
-```
-rag-ingestion-pipeline (prérequis externe, déjà démarré)
-    └── ChromaDB, NebulaGraph, stockage objet disponibles sur rag_network
-
-vllm-central (monté par le projet llm-service, hors de ce dépôt)
-    └── réseau llm-net disponible
-
-agent-api
-    └── healthy après ~30s
-
-frontend (attend agent-api healthy)
-    └── disponible sur http://localhost:8506
-```
-
----
-
-## Endpoints API
-
-| Méthode | Route                    | Description                                          |
-|---------|--------------------------|------------------------------------------------------|
-| GET     | `/health`                | Statut API + modèle LLM demandé et servi             |
-| POST    | `/search`                | Retrieval brut ChromaDB (sans reranking)             |
-| POST    | `/sources`               | Retrieval + reranking + groupement par document      |
-| GET     | `/context/{element_id}`  | Contexte enrichi NebulaGraph (breadcrumbs + section) |
-| POST    | `/answer`                | Question → réponse sans sélection humaine. Expose le classement, les sections reconstruites — `retained` distinguant celles qui sont réellement parties au LLM —, la partition du temps par étage (résidu compris) et les décomptes de tokens du serveur d'inférence : c'est le point d'entrée de la campagne d'évaluation |
-| POST    | `/chat/simple`           | Génération directe sans LangGraph (SSE optionnel)   |
-| POST    | `/chat/start`            | Démarre session agentique → interrupt source selection |
-| POST    | `/chat/resume`           | Reprend après sélection sources → génération        |
-| POST    | `/feedback`              | Appréciation binaire d'une réponse + commentaire libre |
-| POST    | `/reindex`               | Reconstruit l'index lexical BM25 sur le corpus courant. **Appelé par l'ingestion en fin de pipeline** : sans lui, un document ingéré après le démarrage reste invisible en recherche lexicale |
-| GET     | `/media/{object_name}`   | Proxy des objets du stockage objet — les URLs internes ne sont pas résolvables par le navigateur. Borné aux objets référencés par le graphe |
-
-Onze routes. `/health` est la seule qui n'exige pas `X-API-Key` quand une clé
-est configurée : une sonde doit rester interrogeable sans secret.
-
-Documentation interactive : `http://localhost:8001/docs`
-
----
-
-## Limitations connues
-
-| Aspect                  | Limitation                                                     |
-|-------------------------|----------------------------------------------------------------|
-| Granularité de la mesure | Le jeu doré n'annote qu'au **document** : un chapitre entier compte comme un succès. Cette granularité ne peut pas départager deux configurations de retrieval. |
-| Taille du jeu doré      | 15 questions. Sur cet effectif, un écart d'un dixième est du bruit. |
-| Latence de génération   | ~10 s en médiane contre 0,4 s de retrieval. Le levier est le LLM, pas la recherche. |
-| Index BM25              | Construit en mémoire au premier appel : la **première** requête après un démarrage paie ~9 s — chiffre **non mesuré**, cf. [axes_amelioration.md](axes_amelioration.md) §2 — et c'est la seule qui paie encore. Un corpus qui grandit sous l'index déclenche une reconstruction en tâche de fond, et `POST /reindex` la force ; `/health` rend `index_lexical: false` sur un index périmé. Un corpus nettement plus gros demanderait un moteur dédié. |
-| Coût de la traduction   | Un appel LLM par question s'ajoute à la recherche. Un cache, ou un modèle plus petit dédié, l'amortirait. |
-| Multi-workers           | Les sessions et leur purge sont persistées, mais l'index BM25 et les modèles sont chargés par processus : N workers = N copies en mémoire, et **`POST /reindex` ne reconstruit que l'index du worker qui reçoit la requête**. Le contrat de réindexation suppose aujourd'hui un worker unique. |
-| Authentification        | Absente. CORS `*` et `/media` ouvert : quiconque atteint l'API lit tout le bucket. Acceptable en local, bloquant dès qu'on expose. |
-| Streaming E2E           | SSE implémenté, non couvert par un test de bout en bout.       |
-| Observabilité           | Logs console uniquement, pas de tracing distribué.             |
+| Aspect | Limite |
+|---|---|
+| Pertinence | Aucun seuil : une question hors corpus reçoit des sources comme les autres |
+| Latence | La génération porte l'essentiel du temps d'une réponse ([README](../README.md#retours-de-fonctionnement)) |
+| Index BM25 | La première recherche après un démarrage le construit et paie ce coût |
+| Traduction | Un appel au modèle de plus par question |
+| Multi-workers | Index BM25 et modèles chargés par processus ; `POST /reindex` ne reconstruit que le worker qui le reçoit. Le déploiement tourne un worker |
+| Authentification | Le frontend n'envoie pas de clé : `API_KEY` posée coupe l'interface ([SECURITY.md](SECURITY.md)) |
+| Streaming | SSE implémenté, sans test de bout en bout depuis un navigateur |
+| Observabilité | Journaux console et `/health` ; pas de traçage distribué |
