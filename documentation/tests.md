@@ -9,7 +9,7 @@ les autres, et le troisième est le seul à parler de **qualité**.
 | Intégration | `make test-integration` | Le système tient-il debout avec les vrais stores ? |
 | Campagne | `make eval` | Les réponses sont-elles bonnes ? |
 
-## Unitaire — 1312 tests, aucune dépendance
+## Unitaire — 1316 tests, aucune dépendance
 
 > **Ce compte est `mesuré`, ET IL EST DÉSORMAIS GARDÉ.** C'était le §4.13 du
 > registre, un angle mort connu : il a pris 25 tests de retard sans que le lot ni
@@ -20,13 +20,14 @@ les autres, et le troisième est le seul à parler de **qualité**.
 > pytest tests/unit/ --collect-only -q | awk -F': ' '/^tests\/unit\/.*: [0-9]+$/ {s+=$2} END {print s}'
 > ```
 >
-> `mesuré` le 25 septembre 2026 à 14:42 UTC par LOT-43 : **1312** tests sur **64** fichiers,
+> `mesuré` le 27 septembre 2026 à 05:34 UTC par LOT-43 : **1316** tests sur **64** fichiers,
 > et les deux comptes de la recette — la somme par fichier et le total
 > que `pytest` annonce — concordent.
 >
-> **CE COMPTE MONTE DE HUIT, ET `src/` EST TOUCHÉ.**
-> *(LOT-42 relevait **1304** sur **63** fichiers le 25 septembre à 12:54 UTC ; les **8** de plus
-> sont **5** dans le fichier neuf `test_zero_trace_du_nom_retire.py`, **3** de plus
+> **CE COMPTE MONTE DE DOUZE, ET `src/` EST TOUCHÉ.**
+> *(LOT-42 relevait **1304** sur **63** fichiers le 25 septembre à 12:54 UTC ; les **12** de plus
+> sont **5** dans le fichier neuf `test_zero_trace_du_nom_retire.py`, **4** de plus
+> dans `test_schemas.py` (5 → 9), **3** de plus
 > dans `test_contrat_champs_externes.py` (9 → 12), **1** de plus dans
 > `test_bascule_du_nom_de_champ_media.py` (16 → 17) et **1** de moins dans
 > `test_media_url_et_object_key.py` (21 → 20). Deux fichiers sont RENOMMÉS sans
@@ -43,7 +44,10 @@ les autres, et le troisième est le seul à parler de **qualité**.
 > la citation résolue, zéro image et le refus du proxy. Le contrat de
 > `test_contrat_champs_externes.py` n'a plus qu'un état, `media_url` et
 > `object_key`, et ses 3 scènes neuves rougissent si l'ancien nom est relu à
-> un site. Le fichier neuf est la garde du nom retiré — §4.83 du registre.)*
+> un site. Les 4 de `test_schemas.py` gardent le nom `media_url` que NOTRE API
+> publie, par les deux chemins de sérialisation, et celui que le frontend lit :
+> nées des mutations M3b à M3e, que seule la garde du nom attrapait. Le fichier
+> neuf est la garde du nom retiré — §4.83 du registre.)*
 >
 > **UN RELEVÉ PRÉCÉDENT : CE COMPTE MONTAIT DE VINGT-SIX, ET `src/` ÉTAIT TOUCHÉ.**
 > *(LOT-41 relevait **1278** sur **62** fichiers le 25 septembre à 09:31 UTC ; les **26** de plus

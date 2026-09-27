@@ -13675,3 +13675,101 @@ les anciennes variables, et la garde du §4.83 la tolère, elle seule.
 Geste, dans le clone principal, sans afficher aucune valeur, puis contrôle (`0` attendu) :
 `sed -i -e 's/^MINIO_ENDPOINT=/S3_ENDPOINT=/' -e 's/^MINIO_ROOT_USER=/S3_ACCESS_KEY=/' -e 's/^MINIO_ROOT_PASSWORD=/S3_SECRET_KEY=/' -e 's/^MINIO_BUCKET=/S3_BUCKET=/' -e 's/^MINIO_SECURE=/S3_SECURE=/' .env && grep -c '^MINIO_' .env`
 <!-- migration-du-lot-43:fin -->
+
+**CE QUE LE LOT CHANGE.** Quatre commits sur `688521e`. `4314106` : le repli
+sur `<ancien champ de l'URL>` sort des trois sites de lecture du store
+(`graph_context.py`, `lexical.py`, `retriever.py`), les réglages passent à
+`S3_*`, le module du client devient `src/agent/stockage_objet.py`, et le champ
+de NOTRE API devient `media_url` — schémas, flux SSE et frontend. `f8be283` :
+la documentation. `cf7dc24` puis `253a864` : quatre scènes neuves dans
+`tests/unit/test_schemas.py`, nées de la table ci-dessous. La garde du nom,
+`tests/unit/test_zero_trace_du_nom_retire.py`, relève `git grep -i` sur les
+fichiers suivis et ne tolère que trois sites : le nom du paquet
+(`requirements.txt`, `pyproject.toml`, `uv.lock`), l'import unique de
+`stockage_objet.py`, et la zone de migration ci-dessus.
+
+**LE COMPTE : 1316 TESTS SUR 64 FICHIERS**, `mesuré` le 27 septembre 2026 par la
+recette de `documentation/tests.md` (somme par fichier et total annoncé par
+`pytest` concordent). LOT-42 relevait 1304 sur 63 ; les 12 de plus sont 5 dans
+le fichier neuf de la garde du nom, 4 dans `test_schemas.py` (5 → 9), 3 dans
+`test_contrat_champs_externes.py` (9 → 12), 1 dans
+`test_bascule_du_nom_de_champ_media.py` (16 → 17), et 1 de moins dans
+`test_media_url_et_object_key.py` (21 → 20). Parts relevées fichier par fichier
+sur `688521e` et sur `253a864`.
+
+**LA TABLE DES MUTATIONS.** Un arbre détaché par job, le site relevé par motif
+et son unicité assertée AVANT d'écrire, le SHA-256 asserté changé, `py_compile`
+vert, `pytest tests/unit/` entier, puis la restauration confrontée au SHA-256 et
+l'arbre asserté propre — vrai aux 25 passes. Les 19 premières sur `f8be283`
+(1312 tests), M3b à M3e rejouées sur `cf7dc24` et M3a sur `253a864` (1316). Le
+« rc » est celui de `pytest`. Les empreintes sont les 16 premiers caractères.
+« Garde du nom » = `test_le_nom_retire_ne_revient_nulle_part_hors_des_sites_toleres`.
+
+| Passe | Mutation | Fichier | SHA-256 avant → après | rc | Rouges | Tuée par |
+|---|---|---|---|---|---|---|
+| **T** | témoin inerte : 13 lignes vides en tête | `graph_context.py` | `70ea8a0f475919d2` → `3747282c1c89b85e` | 0 | 0 | — (1312 passés) |
+| **M1a** | repli `<ancien champ de l'URL>` rendu — chunk lexical | `lexical.py` | `42e781ffb051272e` → `c03cfbd48ff1e70e` | 1 | 4 | B3 lexical ; chunk sans champ média (lexical) ; contrat ; garde du nom |
+| **M1b** | idem — chunk dense | `retriever.py` | `b28367ba8cab5750` → `1f3bce06cca59972` | 1 | 4 | B3 dense ; chunk sans champ média (dense) ; contrat ; garde du nom |
+| **M1c** | idem — propriétés du sommet | `graph_context.py` | `70ea8a0f475919d2` → `2adfca006648d846` | 1 | 3 | propriétés du sommet sans champ média ; contrat ; garde du nom |
+| **M1d** | idem — `_to_elements` | idem | → `0a5157a425c8f52f` | 1 | 4 | B2 et B2 bis ; contrat ; garde du nom |
+| **M1e** | idem — colonne du `GO` des enfants | idem | → `1dd631bfce2021ac` | 1 | 3 | B1 ; contrat ; garde du nom |
+| **M1f** | idem — `WHERE` et colonnes de la liste blanche | idem | → `d00d48679b7fd5ef` | 1 | 5 | B1 ; aucun champ média ; liste blanche vide ; contrat ; garde du nom |
+| **M1g** | idem — colonne `properties($$)` | idem | → `424a0f5fcb4a60cd` | 1 | 2 | **contrat et garde du nom seulement** |
+| **M2a** | ancienne variable du point d'accès | `settings.py` | `fdc3e98dfca99d12` → `83a6f8d7d190b56c` | 1 | 3 | deux gardes du fichier d'exemple ; garde du nom |
+| **M2b** | ancienne variable de la clé d'accès | idem | → `2000a6d5b9a05216` | 1 | 3 | idem |
+| **M2c** | ancienne variable de la clé secrète | idem | → `a5796857f307b13f` | 1 | 3 | idem |
+| **M2d** | ancienne variable du bucket | idem | → `95936ee2541fc44f` | 1 | 3 | idem |
+| **M2e** | ancienne variable du TLS | idem | → `c99f955104cbf7a9` | 1 | 3 | idem |
+| **M3a** | `ImageRef.media_url` rebaptisé `<ancien champ de l'URL>` | `src/api/schemas.py` | `84e42f1b2868b19a` → `ab094ea07a3e5da9` | 1 | 15 | images servies, citations, postprocess, capture d'usage ; garde du nom |
+| **M3b** | alias de sérialisation `<ancien champ de l'URL>` sur `ImageRef` | idem | → `9711d5281f7e10ba` | 1 | 1 | **garde du nom seulement** |
+| **M3c** | idem sur `ChunkResult` | idem | → `a582125f089dfc07` | 1 | 1 | **garde du nom seulement** |
+| **M3d** | idem sur `SectionElement` | idem | → `7d40d7ce5a3c1b8a` | 1 | 1 | **garde du nom seulement** |
+| **M3e** | le frontend relit `<ancien champ de l'URL>` | `src/frontend/app.py` | `d3c6f78679b742bc` → `d583fdef9aae1c90` | 1 | 1 | **garde du nom seulement** |
+| **G2** | une ancienne variable citée hors de la zone | `axes_amelioration.md` | `1c12a9d810379fce` → `91ddea507afd73d9` | 1 | 1 | garde du nom (attendu : c'est sa cible) |
+| **M3b′** | M3b rejouée sur `cf7dc24` | `src/api/schemas.py` | `84e42f1b2868b19a` → `9711d5281f7e10ba` | 1 | 4 | `test_schemas.py::…par_les_deux_chemins[ImageRef]` ; garde du nom ; deux gardes du compte (note à 1312) |
+| **M3c′** | M3c rejouée sur `cf7dc24` | idem | → `a582125f089dfc07` | 1 | 4 | `…[ChunkResult]` ; garde du nom ; deux gardes du compte |
+| **M3d′** | M3d rejouée sur `cf7dc24` | idem | → `7d40d7ce5a3c1b8a` | 1 | 4 | `…[SectionElement]` ; garde du nom ; deux gardes du compte |
+| **M3e′** | M3e rejouée sur `cf7dc24` | `src/frontend/app.py` | `d3c6f78679b742bc` → `d583fdef9aae1c90` | 1 | 4 | `test_le_frontend_lit_les_images_sous_les_noms_que_l_api_publie` ; garde du nom ; deux gardes du compte |
+| **M3a′** | M3a rejouée sur `cf7dc24` | `src/api/schemas.py` | `84e42f1b2868b19a` → `ab094ea07a3e5da9` | **2** | — | **erreur de COLLECTE de `test_schemas.py`, suite interrompue** |
+| **M3a″** | M3a rejouée sur `253a864` | idem | `84e42f1b2868b19a` → `ab094ea07a3e5da9` | 1 | 19 | `…par_les_deux_chemins[ImageRef]` et `test_le_frontend_lit_les_images_sous_les_noms_que_l_api_publie` ; les 15 de la passe sur `f8be283` ; deux gardes du compte (note à 1312) |
+
+Aux passes ′ et ″, les deux gardes du compte rougissaient parce que la
+note de `tests.md` annonçait encore 1312 : rouge attendu, levé par la note à
+1316.
+
+**M3B À M3E SONT LA TROUVAILLE DE LA TABLE.** Sur `f8be283`, un alias de
+sérialisation remis à l'ancien nom sur l'un des trois modèles qui publient
+l'URL, ou l'ancienne clé relue par le frontend, n'était attrapé QUE par la garde
+du nom — un fait sur l'orthographe du dépôt, pas sur ce que l'API publie. Or ces
+deux défauts rendent des réponses sans une image, sans une erreur. Les scènes
+neuves de `test_schemas.py` sérialisent chaque modèle par les DEUX chemins —
+`model_dump()` nu, celui du flux SSE, et `by_alias=True`, celui de FastAPI — et
+relèvent par AST les clés que le frontend lit sur une image. Rejouées, M3b à M3e
+sont tuées aussi par une scène de comportement.
+
+**M3A A D'ABORD RENDU `rc=2`, ET C'ÉTAIT UN DÉFAUT DE LA SCÈNE.** À `cf7dc24`,
+les trois modèles étaient construits dans l'argument de `parametrize`, donc à la
+COLLECTE : sous M3a, `ImageRef(media_url=…)` levait pendant la collecte, et
+`pytest` interrompait toute la suite sur une erreur au lieu de nommer les tests
+rouges. `253a864` passe par des fabriques appelées DANS le test, et M3a rejouée
+rend `rc=1` avec 19 tests NOMMÉS rouges, dont les deux scènes de `test_schemas.py` qui lisent `ImageRef` (1297 passés sur 1316 collectés).
+
+**CE QUI N'EST PAS PROUVÉ.**
+*(a)* **L'historique git porte toujours le nom.** La décision dit « historique
+compris » ; ce lot ne réécrit aucun commit, et la garde ne mesure que les
+fichiers suivis de l'arbre. Réécrire l'historique d'un dépôt public poussé est
+une décision du propriétaire, hors de ce lot.
+*(b)* **Le `.env` du service n'est pas migré, et le conteneur servi tourne sur
+l'image d'avant.** La table de passage ci-dessus est le geste ; il n'est pas
+fait, et rien dans les tests ne le prouve. Un `.env` non migré démarre sans un
+mot, avec une clé d'accès vide.
+*(c)* **M2a à M2e ne sont tuées que par des gardes de cohérence** — le fichier
+d'exemple et la garde du nom. Aucune scène ne pose `S3_ENDPOINT` dans
+l'environnement pour relire le réglage ; c'est l'accord entre le code et
+`.env.example` qui est gardé, pas la lecture.
+*(d)* **M1g n'est tuée que par la garde de contrat et par la garde du nom**,
+aucune scène de comportement ; elle réintroduit une colonne que plus rien ne lit.
+*(e)* **`mypy` ne tourne que sur `src/`** (`make typecheck`) : il rend 5 erreurs
+dans `tests/unit/test_contrat_champs_externes.py` quand on l'appelle sur les
+tests, hors de la porte, non corrigées ici.
+*(f)* La réingestion des stores est prise au mot du pipeline, comme au §4.82.
