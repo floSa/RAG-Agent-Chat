@@ -13,12 +13,12 @@ stateDiagram-v2
     [*] --> rewrite
     rewrite --> retrieve
     retrieve --> rerank
-    rerank --> await_source_selection: premier passage (search_count ≤ 1)
+    rerank --> await_source_selection: premier passage
     rerank --> reconstruct_context: itération de la boucle
     await_source_selection --> reconstruct_context
     reconstruct_context --> generate
     generate --> postprocess
-    postprocess --> retrieve: recherche demandée et search_count < MAX_SEARCH_ITERATIONS
+    postprocess --> retrieve: appel d'outil, sous le plafond de recherches
     postprocess --> [*]: sinon
 ```
 
@@ -26,11 +26,11 @@ stateDiagram-v2
 |---|---|
 | `rewrite` | Rend une question de suivi autonome (`rewrite_question`, sans appel au modèle s'il n'y a pas d'historique ou si `QUERY_REWRITE=false`), puis la traduit dans l'autre langue du corpus (`translate_question`, si `CROSS_LINGUAL_SEARCH=true`) |
 | `retrieve` | Recherche dense et BM25 pour la question et sa traduction, fusion RRF, coupe à `RETRIEVAL_TOP_K` ; incrémente `search_count` |
-| `rerank` | Cross-encoder, déduplication par `element_id`, coupe à `RERANK_TOP_K` |
+| `rerank` | Cross-encoder, déduplication par `element_id`, coupe à `RERANK_TOP_K` ; vers la sélection au premier passage seulement, `search_count <= 1` (`is_first_pass`) |
 | `await_source_selection` | Point d'interruption du flux interactif ; sans effet dans `answer_graph` |
 | `reconstruct_context` | Sélection (humaine, ou les `AUTO_SELECT_TOP_K` premières), puis reconstruction de chaque section par le graphe, par pertinence décroissante |
 | `generate` | Budget de fenêtre, prompt, génération en flux avec l'outil `search_vectors` |
-| `postprocess` | Résolution des `[src:ID]` et `[img:ID]`, restreinte aux éléments réellement soumis ; décide d'une recherche supplémentaire |
+| `postprocess` | Résolution des `[src:ID]` et `[img:ID]`, restreinte aux éléments réellement soumis ; retour à `retrieve` si le modèle a appelé l'outil et `search_count < MAX_SEARCH_ITERATIONS` (`should_search_more`) |
 
 Deux compilations du même graphe, `agent_graph` (interruption avant `await_source_selection`, checkpointer SQLite) et `answer_graph` (ni l'un ni l'autre) : voir [architecture.md](architecture.md#deux-entrées-dans-le-même-graphe).
 

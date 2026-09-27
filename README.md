@@ -123,7 +123,9 @@ flowchart TB
         GPU[["Carte L4 partagée, 23 034 MiB"]]
     end
     FR ---|"réseau internal"| API
-    API ---|"réseau rag_network, externe"| CH & NG & SW
+    API ---|"réseau rag_network, externe"| CH
+    API ---|"réseau rag_network"| NG
+    API ---|"réseau rag_network"| SW
     API ---|"réseau llm-net, externe"| VL
     API -.->|"1 460 MiB"| GPU
     VL -.->|"14 264 MiB"| GPU
