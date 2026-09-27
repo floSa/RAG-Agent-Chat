@@ -1,82 +1,51 @@
-# Le moteur LLM — service central
+# Le serveur d'inférence et le budget de la fenêtre
 
-Ce projet **n'embarque aucun serveur d'inférence**. Les modèles sont servis par
-le projet [`llm-service`](https://github.com/floSa/llm-service), qui expose le
-conteneur `vllm-central` sur le réseau Docker `llm-net`, **servi depuis le
-17 septembre 2026**.
+Comment l'agent parle au serveur d'inférence, comment il remplit la fenêtre de contexte, et comment vérifier l'un et l'autre. Pour qui règle la génération ou diagnostique un prompt trop long.
 
-## Pourquoi
+## Le serveur
 
-Un serveur d'inférence vivait dans le `docker-compose.yml` de ce projet, avec son
-propre volume de modèles. Elle faisait doublon avec le service central : un
-`docker compose up -d` la recréait et retéléchargeait plusieurs gigaoctets d'un
-modèle déjà servi à côté. Un seul serveur d'inférence pour tous les projets
-évite d'en héberger un par dépôt, et de multiplier les copies des poids.
+L'agent n'embarque aucun serveur d'inférence. Il parle au conteneur `vllm-central` du projet [`llm-service`](https://github.com/floSa/llm-service), sur le réseau Docker `llm-net`, en dialecte OpenAI (`POST /v1/chat/completions`). Ce serveur appartient à une équipe voisine et sert aussi d'autres projets : l'agent ne fait qu'y lire et y générer.
 
-## Configuration
+Ce qui est servi, `mesuré` le 27 septembre 2026 à 06:19 UTC par `curl -s http://localhost:8011/health` (bloc `moteur_llm`) : serveur `vllm` version `0.28.0`, modèle `google/gemma-4-E4B-it-qat-w4a16-ct` demandé et servi, fenêtre servie `32768`. Le relevé du moteur, ses champs et sa signature dans les campagnes sont décrits dans [moteur_llm.md](moteur_llm.md).
 
-| Variable | Valeur | Rôle |
+Démarrer le serveur, puis vérifier le modèle servi :
+
+```bash
+cd ~/mes_projets/llm-service && make up
+```
+```bash
+make models
+```
+
+## La configuration
+
+| Variable | Défaut du code | Rôle |
 |---|---|---|
-| `LLM_HOST` | `http://vllm-central:8000` | Endpoint du service central |
+| `LLM_HOST` | `http://vllm-central:8000` | Adresse du serveur |
 | `LLM_MODEL` | `google/gemma-4-E4B-it-qat-w4a16-ct` | Modèle de génération |
-| `LLM_NUM_CTX` | `8192` | Budget de prompt que le **client** s'autorise |
+| `LLM_NUM_CTX` | `8192` | Budget de prompt que le client s'autorise |
 | `LLM_MAX_TOKENS` | `4096` | Plafond de génération |
 | `LLM_TEMPERATURE` | `0.1` | Température |
-| `LLM_THINKING` | `false` | Raisonnement de Gemma 4, coûteux en CPU |
-| `HISTORY_WINDOW_SHARE` | `0.25` | Part de la fenêtre de prompt laissée à l'historique — **forfait**, cf. plus bas |
+| `LLM_THINKING` | `false` | Raisonnement du modèle, passé par requête dans `chat_template_kwargs` |
+| `HISTORY_WINDOW_SHARE` | `0.25` | Part de la fenêtre de prompt laissée à l'historique |
+| `TRUNCATION_FLOOR_SHARE` | `1/3` | Part minimale d'une source tronquée |
 
-`LLM_NUM_CTX` **n'est pas envoyé au serveur** : le dialecte OpenAI n'a pas de
-champ de fenêtre, et celle de `vllm-central` est fixée à son lancement
-(`--max-model-len 32768`). Il borne ce que le client s'autorise à envoyer, et
-`/health` publie en regard la fenêtre réellement servie (`fenetre_servie`) — de
-sorte qu'un écart entre les deux se voie au lieu de se deviner.
+`LLM_NUM_CTX` n'est pas envoyé au serveur : le dialecte OpenAI n'a pas de champ de fenêtre, et celle de `vllm-central` est fixée à son lancement (`--max-model-len 32768`). Il borne ce que le client envoie. `/health` publie en regard la fenêtre servie (`moteur_llm.fenetre_servie`) et la valeur en vigueur (`moteur_llm.options.num_ctx`).
 
-**Les deux premières clés ont remplacé cinq autres au lot 28**, et un `.env`
-antérieur doit être migré : la marche à suivre exacte est dans
-[moteur_llm.md](moteur_llm.md), section « la migration du `.env` ».
+Le défaut du dépôt reste `8192`. Sur ce poste, le `.env` le porte à `32768` depuis le 22 septembre 2026 : `/health` publie `options.num_ctx` à `32768` (`mesuré` le 27 septembre 2026 à 06:19 UTC). Élargir la fenêtre n'a pas été mesuré comme un gain, et le plus gros prompt mesuré au §4.66 du [registre](axes_amelioration.md) vaut 4849 jetons, soit 15 % de la fenêtre servie. Historique de ce changement : §4.63 et §4.64 du registre.
 
-Ce tableau annonçait `32768`, alors que `.env.example` et `settings.py` valent
-`8192` — un facteur quatre sur la capacité annoncée, dont le budget de sources
-dérive directement. La valeur retenue est **8192**, celle qui s'exécute. Monter à
-32768 quadruple le cache KV et le coût de préremplissage, sur un déploiement où
-la latence de génération est déjà à 12,4 s au p95 : c'est un changement qui se
-mesure par une campagne, pas qui se décrète dans une table.
+Deux avertissements, mesurés le 16 septembre 2026 :
 
-> **CORRECTION DATÉE DU 25 SEPTEMBRE 2026 — LA PHRASE « CELLE QUI S'EXÉCUTE »
-> N'EST PLUS VRAIE DU SERVICE, ET LE RESTE DU PARAGRAPHE TIENT.** Rien n'est
-> retiré ci-dessus.
->
-> Les deux moitiés de la phrase se sont séparées le **22 septembre 2026** :
->
-> - **Le défaut du dépôt vaut toujours `8192`**, et le tableau ci-dessus est
->   juste — `grep -n LLM_NUM_CTX .env.example` rend `LLM_NUM_CTX=8192` (l. 66) et
->   `src/agent/settings.py:86` porte `default=8192` (`mesuré` le 25 septembre
->   2026 à 08:32 UTC).
-> - **Ce qui s'exécute sur ce poste vaut `32768`** : le `.env` du clone
->   principal a été porté à cette valeur le 22 septembre 2026, et
->   `curl -s http://localhost:8011/health` publie `moteur_llm.options.num_ctx`
->   et `fenetre_servie` à **32768** (`mesuré` le 25 septembre 2026 à 08:10 UTC,
->   code servi `97bba20`).
->
-> **Ce changement a coûté quelque chose, et c'est écrit** : dix scènes de tests
-> **héritaient** du plafond au lieu de le **poser**, et la fenêtre élargie ne les
-> a pas fait échouer — *elle les a privées de leur sujet*, pendant deux jours,
-> sans qu'aucune porte ne rougisse. Site canonique :
-> [axes_amelioration.md](axes_amelioration.md) §4.63 et §4.64, ligne **81** du
-> journal de [pilotage_du_chantier.md](pilotage_du_chantier.md).
->
-> **Et la campagne que ce paragraphe appelle n'a pas été faite** : élargir la
-> fenêtre n'a pas été mesuré comme un gain. Trois mesures disent au contraire
-> que **ce n'était pas le levier** — le plus gros prompt mesuré au §4.66 vaut
-> **4849** jetons, soit **15 %** de la fenêtre servie, et *le budget n'écarte
-> rien, ni à 3 ni à 6* sources.
+- `LLM_THINKING=true` n'est pas exploitable sur `vllm-central`, qui tourne sans `--reasoning-parser` : hors flux la réponse est `null`, en flux le raisonnement brut part à l'écran. Aucun des deux cas ne lève.
+- Un champ d'un autre dialecte envoyé au serveur est accepté en HTTP 200 puis ignoré. Toute requête passe donc par un site unique, `src/agent/dialecte_llm.py`.
+
+La migration d'un `.env` antérieur au moteur unique est décrite dans [moteur_llm.md](moteur_llm.md), section « La migration du `.env`, exacte ».
 
 ## Le budget de contexte
 
 ### La formule
 
-Le budget ne se calcule pas sur la fenêtre nue. `num_ctx` est partagé entre le
-prompt et la génération, et le prompt ne contient pas que des sources :
+`num_ctx` est partagé entre le prompt et la génération, et le prompt ne contient pas que des sources :
 
 ```
 fenêtre utile     = (LLM_NUM_CTX − LLM_MAX_TOKENS) × 3,5 caractères/token
@@ -88,208 +57,58 @@ budget sources    = fenêtre utile − prompt système
 coût d'une source = len(markdown) + son encadrement, mesuré dans le gabarit
 ```
 
-L'encadrement est facturé **au moment où la source est retenue**, jamais pour une
-candidate écartée. Le compter d'avance sur les candidates réservait la place de
-sources qui ne seraient jamais rendues : dix candidates dont six retenues, et une
-septième qui aurait tenu se faisait écarter — mesuré, sept candidates en
-gardaient sept et dix n'en gardaient plus que six.
+Chaque terme est la longueur d'une chaîne réellement construite, pas une provision. L'encadrement d'une source n'est facturé qu'au moment où elle est retenue.
 
-À `8192 / 4096`, **mesuré à l'exécution** — chaque terme est la longueur d'une
-chaîne réellement construite, pas une provision :
+Valeurs mesurées à l'exécution, à `8192 / 4096` :
 
-| Terme mesuré | Caractères |
+| Terme | Caractères |
 |---|---|
 | Fenêtre utile | 14 336 |
-| Prompt système (`prompts/system.txt`, lu) | 935 |
+| Prompt système (`prompts/system.txt`) | 935 |
 | Gabarit rendu sans sources | 472 |
 | Déclaration de l'outil `search_vectors` (si `NATIVE_TOOL_CALLING`) | 417 |
 | Encadrement d'une source, sans fil des titres | 34 |
 | Encadrement d'une source, fil des titres à 2 niveaux | 134 |
 | Encadrement d'une source, fil des titres à 5 niveaux | 275 |
-| **Budget de sources** — premier tour | **12 444** |
-| **Budget de sources** — trois tours de 600 caractères par message (dont un tour écarté) | **9 908** |
+| Budget de sources, premier tour | 12 444 |
+| Budget de sources, trois tours de 600 caractères par message (dont un tour écarté) | 9 908 |
 
-L'encadrement va de 34 caractères sans fil des titres à 275 avec cinq niveaux :
-un forfait unique serait faux dans les deux sens selon le document. Il était
-forfaitisé à 200, ce qui paraissait généreux sur des fixtures sans breadcrumbs —
-mais en production `breadcrumbs` est **toujours** peuplé, c'est le résultat de la
-remontée `PARENT_OF`, et le gabarit imprime « Chemin : » en clair. Il est
-désormais mesuré source par source, par décomposition
-(`rendu([source]) − rendu([]) − len(markdown)`) : le gabarit n'a aucune dépendance
-entre ses sources, donc la décomposition est exacte — vérifié sur douze sources.
+L'encadrement est mesuré source par source, par décomposition (`rendu([source]) − rendu([]) − len(markdown)`). La déclaration de l'outil est comptée : le serveur la rend dans le prompt par le gabarit de chat.
 
-`tools` n'est pas un canal séparé pour le modèle : le serveur le rend **dans** le
-prompt via le gabarit de chat. Ne pas le compter laissait le même trou que le
-forfait, à plus petite échelle — 417 caractères, soit ~119 tokens.
+Ce qui reste un forfait, liste complète :
 
-Ce qui reste un **forfait** — la liste est complète, tout ce qui n'y figure pas
-est mesuré à l'exécution :
-
-| Forfait | Valeur | À mesurer |
+| Forfait | Valeur | Ce qui le réglerait |
 |---|---|---|
-| Ratio caractères/token | 3,5 | Le log `prompt_eval_count` donne le ratio mesuré à chaque génération |
-| Balises de tour du gabarit de chat, par message | 34 | Dépend du modèle. C'est le décompte du gabarit Gemma — `<start_of_turn>user\n` 20 caractères, `<end_of_turn>\n` 14 — appliqué à tous |
-| Part de la fenêtre laissée à l'historique (`HISTORY_WINDOW_SHARE`) | 25 % | Demande une mesure de la qualité multi-tour, qui n'existe pas |
-| Part minimale d'une source tronquée (`TRUNCATION_FLOOR_SHARE`) | 1/3 | La valeur elle-même : le prix du réglage est **continu**, aucun palier ne la désigne. La mesure établit que le plancher doit exister (sans lui, un fragment tombe à 1 % de sa source) et que le réglage veut dire ce qu'il dit (la plus petite part retenue le suit de près) ; elle ne tranche pas entre 0,25 et 0,40. Ce qui trancherait est une mesure de la QUALITÉ des réponses, qui demande une campagne |
-| Marge sous `num_ctx` au-delà de laquelle on avertit que le prompt affleure le budget | 8 tokens | Dépend du gabarit de chat, qui ne retombe pas pile sur la borne. Se resserrerait sur des `prompt_eval_count` réels |
-| Fraction de l'estimation sous laquelle une mesure est imputée à un cache de préfixe | 0,6 | Choisi assez bas pour ne pas écarter une simple erreur d'estimation, assez haut pour attraper un préfixe caché. Se réglerait sur la distribution observée |
-
-Le budget précédent valait 12 544 caractères, **constant** : un forfait de 512
-tokens tenait lieu de provision pour « le prompt système, le gabarit et
-l'historique ». L'historique n'y entrait jamais. Six messages sont acceptés,
-chaque réponse assistante peut atteindre `LLM_MAX_TOKENS`, et `Message.content`
-n'avait aucune borne : mesuré sur six messages de 3 000 caractères et deux
-sources de 12 000, le prompt faisait **31 380 caractères pour une fenêtre utile
-de 14 336**, soit 2,2 fois la fenêtre.
-
-Ce qui se passait alors est le mode de panne le plus coûteux du projet : le serveur
-tronque **par le début** du prompt. Il jette donc le message système — « cite
-chaque affirmation », « ne réponds jamais au-delà des sources », « dis-le si tu
-ne trouves pas ». Le garde-fou disparaissait exactement quand la conversation
-devenait assez longue pour en avoir besoin.
-
-Le ratio de 3,5 caractères/token reste une estimation — le tokenizer réel dépend
-du modèle. Mais il s'applique désormais à **toutes** les parties du prompt : ce
-n'était pas le ratio qui trompait, c'était son application partielle.
+| Ratio caractères/token | 3,5 | Le ratio mesuré que publie chaque génération (voir plus bas) |
+| Balises de tour, par message | 34 | Le décompte du gabarit Gemma, appliqué à tous |
+| Part de l'historique (`HISTORY_WINDOW_SHARE`) | 25 % | Une mesure de la qualité multi-tour, qui n'existe pas |
+| Part minimale d'une source tronquée (`TRUNCATION_FLOOR_SHARE`) | 1/3 | Une mesure de la qualité des réponses ; la grille ci-dessous établit seulement que le plancher doit exister |
+| Marge sous `num_ctx` à partir de laquelle on avertit | 8 tokens | Des `prompt_eval_count` réels |
+| Fraction de l'estimation sous laquelle une mesure est imputée à un cache de préfixe | 0,6 | La distribution observée en campagne |
 
 ### Ce qui est écarté, et par quel bout
 
-L'ordre compte, et il n'est pas celui de l'appelant. `node_reconstruct_context`
-reconstruit les sections **par pertinence décroissante**, sur le classement du
-reranker : sans ce tri, la fenêtre écartait la dernière du hachage d'un `set`
-côté frontend plutôt que la moins pertinente.
+`node_reconstruct_context` reconstruit les sections par pertinence décroissante, sur le classement du reranker. `fit_prompt` est le point d'entrée unique, appelé une fois par génération ; `/answer` en publie le résultat (`dropped_contexts`).
 
-| Élément | Coupe | Sens |
+| Élément | Coupe | Règle |
 |---|---|---|
-| Sources | Les moins bien classées | Remplissage **au mieux** : une petite source qui suit une grosse écartée est conservée |
-| La marge de fenêtre restante | Donnée à la **mieux classée des écartées**, tronquée | Elle restait vide : 1 355 caractères de fenêtre inutilisés en moyenne et 7 970 au maximum sur 88 configurations, ramenés à 408 en moyenne — 70 % de la marge reprise, 38 configurations gagnées et aucune perdue. Une seule source la reçoit — il n'y a qu'une marge. Si elle est refusée par le plancher, la suivante est essayée : plus petite, elle a plus de chances d'atteindre sa part |
-| Fragment sous `TRUNCATION_FLOOR_SHARE` | La source est écartée entière | Le modèle en verrait assez pour la citer, pas assez pour savoir ce qu'elle dit. Un défaut silencieux vaut moins qu'une abstention visible. Sans plancher, la grille descend à **1 %** d'une source |
-| Source unique trop grosse | Tronquée par la **fin**, sur une frontière d'élément, avec une marque dans le markdown | Mieux vaut une source amputée que zéro source — mais pas au prix d'un prompt que le serveur refuserait entier. Le plancher et l'exigence de marqueur sont **relâchés** dans ce seul cas : il n'y a rien à arbitrer quand il n'y a rien d'autre. La coupe recule jusqu'à la fin du dernier `[src:ID]` complet : un fragment sans marqueur n'est pas attribuable alors que le prompt système exige de citer chaque affirmation |
-| Historique | Les **tours** les plus anciens, entiers | C'est le dernier échange qui situe la question. La coupe porte sur des tours et non des messages : couper par message laissait passer une réponse sans la question à laquelle elle répondait, soit un prompt `['system', 'assistant', 'user']` qu'un gabarit strict sur l'alternance refuse |
-| Tour trop gros à lui seul | Écarté, pas tronqué | `node_rewrite` a déjà rendu la question de suivi autonome avant l'encodage : l'historique est du confort, pas un prérequis |
+| Sources | Les moins bien classées | Remplissage au mieux : une petite source qui suit une grosse écartée est conservée |
+| La marge de fenêtre restante | Donnée à la mieux classée des écartées, tronquée | Elle restait vide : 1 355 caractères de fenêtre inutilisés en moyenne et 7 970 au maximum sur 88 configurations, ramenés à 408 en moyenne — 70 % de la marge reprise, 38 configurations gagnées et aucune perdue. Si la première candidate est refusée par le plancher, la suivante est essayée |
+| Fragment sous `TRUNCATION_FLOOR_SHARE` | Source écartée entière | Sans plancher, la grille descend à 1 % d'une source |
+| Source unique trop grosse | Tronquée par la fin, sur une frontière d'élément, avec une marque | Plancher relâché dans ce seul cas ; la coupe recule jusqu'au dernier `[src:ID]` complet |
+| Historique | Les tours les plus anciens, entiers | La coupe porte sur des tours, pas des messages, pour garder l'alternance du gabarit de chat |
+| Tour trop gros à lui seul | Écarté | `node_rewrite` a déjà rendu la question autonome |
 
-`fit_prompt` est le point d'entrée unique, et il est appelé **une seule fois par
-génération** : `_build_messages` construit le prompt avec, et rend le budget
-appliqué. `node_generate` le récupère par le rappel `on_fit` et le publie dans
-l'état du graphe, d'où `/answer` lit ses `dropped_contexts`. Recalculer le budget
-côté endpoint journalisait chaque troncature deux fois et rendait le gabarit une
-fois de plus par candidate — et surtout, deux calculs séparés dérivent : la
-campagne d'évaluation aurait rapporté un autre nombre de sources écartées que ce
-qui a réellement atteint le LLM.
+Au-delà de sa fenêtre, le serveur refuse la requête entière : HTTP 400, « maximum context length is 32768 tokens » (`mesuré` le 18 septembre 2026 à 12:35 UTC). Le budget existe pour ne jamais l'atteindre.
 
-Les bornes d'entrée correspondantes sont dans `src/api/schemas.py` :
-`MAX_MESSAGE_CHARS` (14 336, soit le plafond de génération lui-même),
-`MAX_HISTORY_MESSAGES` (6, ce qui est soumis au LLM) et `MAX_HISTORY_PAYLOAD`
-(50, ce qu'une requête peut porter).
-
-### L'instrumentation : `prompt_eval_count`
-
-L'événement d'usage du flux — celui qui porte `"choices": []` — contient les
-décomptes du serveur, dont le nombre **réel** de tokens du prompt. Personne ne le
-lisait. Le ratio caractères/token restait une devinette qu'aucune mesure ne
-corrigeait, et un prompt qui dépassait `num_ctx` ne laissait **aucune trace**.
-
-Chaque génération journalise désormais :
-
-```
-INFO  Prompt : estimé 3214 tokens, réel 3480, écart -7.6 % — ratio mesuré
-      3.23 caractères/token (retenu : 3.50).
-```
-
-**Exemple de forme, pas une mesure** : aucun `prompt_eval_count` réel n'a encore
-été observé — cela demande la stack démarrée. Les chiffres ci-dessus illustrent la
-lecture du log, ils ne mesurent rien.
-
-Comment la lire :
-
-- **écart négatif** : l'estimation sous-estime le prompt. Le budget est trop
-  permissif, et le ratio devrait baisser vers le ratio mesuré ;
-- **écart positif** : le budget est trop prudent et écarte des sources qui
-  auraient tenu ;
-- **ratio mesuré** : la valeur qu'il aurait fallu donner à `_CHARS_PER_TOKEN`
-  pour que l'estimation soit exacte. C'est de là que viendra sa calibration —
-  sur la distribution observée en campagne, pas sur une valeur posée au jugé.
-
-Deux `WARNING` encadrent la zone dangereuse. Ils ne portent PAS sur
-`prompt_eval_count > num_ctx` : l'ancien moteur tronquait le prompt **avant** de
-l'évaluer, donc ce décompte était majoré par `num_ctx` par construction, et une
-première version guettait ainsi une condition inatteignable — le détecteur ne
-pouvait pas voir ce qu'il cherchait.
-
-| Zone | Signal |
-|---|---|
-| `prompt_eval_count` à moins de 8 tokens de `num_ctx` | Le prompt **affleure le budget que le client se donne**. Le serveur ne tronque pas — il refuse au-delà de SA fenêtre, en HTTP 400 (`mesuré` le 18 septembre 2026 à 12:35 UTC) —, mais une source de plus et la borne client coupe. Le signal a changé de sens au lot 28 : il annonce, il ne constate plus un dommage subi |
-| `prompt_eval_count` au-delà de la fenêtre de prompt (`num_ctx − num_predict`) | La génération n'a plus ses `num_predict` tokens et sera rognée sans le dire. Le budget a sous-estimé le prompt |
-
-### Un cache de préfixe peut fausser la mesure — mais pas sur ce poste
-
-Un serveur qui ne réévaluerait que le préfixe **absent de son cache** rapporterait,
-au deuxième tour d'une conversation, un décompte qui ne mesure plus le prompt mais
-son suffixe non caché — quelques dizaines de tokens pour un prompt de plusieurs
-milliers.
-
-**`vllm-central` ne fait pas cela**, et c'est mesuré plutôt que supposé : le
-18 septembre 2026 à 12:42 UTC, deux requêtes identiques à la suite rendent
-`prompt_tokens = 616` toutes les deux. Il a bien un cache de préfixe, mais il
-rapporte le prompt **entier**. La garde décrite ci-dessous est donc **défensive
-et non exercée par ce poste** : elle est gardée parce qu'elle protège la
-calibration contre tout serveur qui rapporterait un compte amputé, et parce que
-retirer une protection qu'on vient de mesurer endormie ne se justifie par aucune
-mesure. Borne écrite, non fermée.
-
-Une telle mesure est écartée de la calibration : en deçà de 60 % de l'estimation,
-le log dit que la valeur est ignorée et pourquoi. **Ne recalibrez jamais
-`_CHARS_PER_TOKEN` sur ces échantillons** — le ratio fondrait à chaque tour de
-conversation. Pour calibrer, ne retenez que les mesures publiées avec un « ratio
-mesuré », ou ne prenez que le premier appel d'une conversation.
-
-```bash
-docker compose logs -f agent-api | grep "Prompt :"
-```
-
-### La mesure ne sort plus seulement en journal
-
-Le lot 1 a construit cette instrumentation, et **rien ne l'avait jamais
-observée** : elle ne sortait qu'en `logger.info`, donc aucune campagne n'en
-gardait trace. Depuis le lot 4, `/answer` publie les décomptes réels sous
-`generation`, et `scripts/evaluate.py` les enregistre par question :
-
-| Champ | Ce qu'il porte |
-|---|---|
-| `prompt_eval_count` | Décompte réel du prompt, tel que le serveur l'a rendu |
-| `prompt_tokens_estimated` | Notre estimation du même prompt, avec le ratio qui a décidé de la coupe |
-| `prompt_tokens_reliable` | Faux = échantillon pollué par le cache KV, à écarter de la calibration |
-| `eval_count` | Tokens **générés** |
-| `num_predict` | Le plafond qui s'appliquait |
-
-La décision d'écarter un échantillon pollué reste **unique** :
-`llm.mesure_prompt_exploitable` la porte, `log_prompt_measure` l'applique, la
-campagne l'applique. Deux prédicats séparés dériveraient, et la campagne
-publierait un ratio que le journal a refusé.
-
-Le résumé de campagne en tire `ratio_caracteres_par_token_mesure` — calculé sur
-les seuls échantillons exploitables, avec le nombre d'écartés à côté. C'est ce
-chiffre qui calibrera `_CHARS_PER_TOKEN`, aujourd'hui un forfait de 3,5 posé au
-jugé.
+Bornes d'entrée correspondantes, dans `src/api/schemas.py` : `MAX_MESSAGE_CHARS` (14 336), `MAX_HISTORY_MESSAGES` (6, soumis au modèle), `MAX_HISTORY_PAYLOAD` (50, acceptés par requête).
 
 ### Remesurer la marge de fenêtre
 
-Sans stack : la grille est un calcul pur sur `fit_contexts`, elle ne demande ni
-le serveur LLM ni les stores. Elle mesure l'**avant** et l'**après** dans la même
-exécution — l'algorithme d'avant y est réimplémenté, sinon les deux colonnes
-sortent de deux montages différents et ne se comparent pas.
-
-Deux traits comptent, et ils ont tous les deux été appris à leurs dépens :
-
-- la grille reconstruit l'**avant** ; une version antérieure ne mesurait que
-  l'après tout en publiant ses chiffres comme l'avant ;
-- les sources d'une même configuration n'ont **pas la même taille**. Avec des
-  tailles uniformes, le plancher mord pour toutes ou pour aucune : le résultat
-  devient plat sur de larges plages, et cette platitude est un artefact du
-  montage, pas une propriété du réglage.
+La grille est un calcul pur sur `fit_contexts` : elle ne demande ni serveur ni store. Elle reconstruit l'algorithme d'avant dans la même exécution, et tire des sources de tailles inégales à graine fixe. Depuis la racine du dépôt, `.venv` activé, sans `.env` (les défauts `8192 / 4096` s'appliquent) :
 
 ```bash
-uv run python - <<'EOF'
+python - <<'EOF'
 import random
 from src.agent import llm
 from src.agent.llm import (_TRUNCATION_MARKER, context_budget_chars, fit_contexts,
@@ -365,7 +184,7 @@ for plancher in (0.0, 0.15, 0.25, 1/3, 0.40, 0.50):
 EOF
 ```
 
-Sortie du dépôt d'aujourd'hui, **mesurée** :
+Sortie, `rejoué` le 27 septembre 2026 à 06:28 UTC, `rc=0` (le journal des troncatures s'imprime avant ces lignes) :
 
 ```
 configurations avec au moins une ecartee : 88 / 144
@@ -382,66 +201,64 @@ plancher 0.40 : marge    457, 35 gagnees, plus petite part 41 %
 plancher 0.50 : marge    585, 31 gagnees, plus petite part 51 %
 ```
 
-La première moitié de cette sortie est reprise mot pour mot dans le docstring de
-`fit_contexts` et dans le registre, et `test_coherence_depot` exige que les trois
-restent identiques. C'est ce garde-fou qui manquait : la même grille a porté
-jusqu'à **trois triplets différents**, un par endroit où elle était recopiée.
+La première moitié de cette sortie est reprise dans le docstring de `fit_contexts` et au §1.30 du registre ; `tests/unit/test_coherence_depot.py` exige que les trois copies restent identiques. Remesurer, c'est éditer les trois.
 
-## `LLM_MAX_TOKENS` — à mesurer
+## L'instrumentation : `prompt_eval_count`
 
-`LLM_MAX_TOKENS = 4096` réserve la **moitié** de la fenêtre à la génération, et
-rien ne dit que celle-ci en a besoin. Le seul indice sourcé est indirect :
-`runs/final.json` donne 3,246 citations par réponse — une réponse à trois
-citations est rarement longue. Mais **la longueur des réponses n'est mesurée
-nulle part**, donc l'affirmation « une génération qui n'arrive jamais » reste une
-présomption, pas un fait. C'est exactement ce que le protocole ci-dessous
-mesure.
+L'événement d'usage du flux porte les décomptes du serveur, dont le nombre réel de tokens du prompt. Chaque génération journalise l'estimation en regard :
 
-**La valeur n'a pas été ajustée, faute de pouvoir la mesurer** : ni
-`vllm-central` ni les stores n'étaient joignables. Un chiffre inventé est pire
-que pas de chiffre.
+```
+INFO  Prompt : estimé 3214 tokens, réel 3480, écart -7.6 % — ratio mesuré
+      3.23 caractères/token (retenu : 3.50).
+```
 
-Les campagnes passées ne permettent pas de reconstituer la distribution après
-coup — `runs/*.json` n'enregistrait que `generation_ms`. Depuis le lot 4, la
-campagne l'enregistre, et le protocole n'est plus un script à part : c'est
-`make eval`, dont le résumé porte les quatre chiffres qui tranchent.
+Cette ligne montre la forme du journal ; ses chiffres sont un exemple, pas une mesure. Lecture :
+
+- écart négatif : l'estimation sous-estime le prompt, le budget est trop permissif ;
+- écart positif : le budget est trop prudent et écarte des sources qui auraient tenu ;
+- ratio mesuré : la valeur qu'aurait dû avoir `_CHARS_PER_TOKEN`.
+
+| Avertissement | Signal |
+|---|---|
+| `prompt_eval_count` à moins de 8 tokens de `num_ctx` | Le prompt affleure le budget du client ; une source de plus et la borne coupe |
+| `prompt_eval_count` au-delà de `num_ctx − num_predict` | La génération n'a plus tous ses tokens et sera rognée sans le dire |
+
+Un serveur qui ne réévaluerait que le suffixe absent de son cache de préfixe rapporterait un décompte amputé. `vllm-central` ne le fait pas : deux requêtes identiques rendent `prompt_tokens = 616` toutes les deux (`mesuré` le 18 septembre 2026 à 12:42 UTC). La garde reste en place, défensive : sous 60 % de l'estimation, la mesure est écartée de la calibration et le journal le dit. Ne jamais recalibrer `_CHARS_PER_TOKEN` sur ces échantillons.
+
+```bash
+docker logs -f rag-agent-api 2>&1 | grep "Prompt :"
+```
+
+`/answer` publie ces décomptes sous `generation`, et `scripts/evaluate.py` les enregistre par question :
+
+| Champ | Contenu |
+|---|---|
+| `prompt_eval_count` | Décompte réel du prompt |
+| `prompt_tokens_estimated` | Estimation du même prompt |
+| `prompt_tokens_reliable` | Faux : échantillon pollué par un cache, écarté de la calibration |
+| `eval_count` | Tokens générés |
+| `num_predict` | Le plafond appliqué |
+
+La décision d'écarter un échantillon a un seul site, `llm.mesure_prompt_exploitable`, appliqué par le journal comme par la campagne. Le résumé de campagne en tire `ratio_caracteres_par_token_mesure`, sur les seuls échantillons exploitables.
+
+## `LLM_MAX_TOKENS` reste à mesurer
+
+`LLM_MAX_TOKENS = 4096` réserve la moitié de la fenêtre par défaut à la génération, et la longueur réelle des réponses n'est pas encore mesurée. `make eval` publie les chiffres qui trancheront :
 
 | Chiffre du résumé | Ce qu'il décide |
 |---|---|
-| `generations_au_plafond` | **Le chiffre qui tranche.** Zéro sur les 138 questions = le plafond n'est jamais atteint, donc les tokens qu'il réserve sont pris aux sources pour rien. Non nul = le baisser tronquerait des réponses |
-| `eval_count_p95`, `eval_count_max` | Où poser le plafond : au p95 mesuré, majoré d'une marge assumée |
-| `eval_count_sur` | Sur combien de réponses les trois précédents portent — un serveur qui ne rend pas le décompte les rendrait vides |
-| `reponse_caracteres_p95` | Le repli si le serveur ne rend pas `eval_count` : une longueur en caractères, à diviser par le ratio mesuré |
+| `generations_au_plafond` | Zéro sur toutes les questions : le plafond ne sert jamais. Non nul : le baisser tronquerait des réponses |
+| `eval_count_p95`, `eval_count_max` | Où poser le plafond |
+| `eval_count_sur` | Sur combien de réponses portent les chiffres précédents |
+| `reponse_caracteres_p95` | Le repli si le serveur ne rend pas `eval_count` |
 
-`eval_count` est le décompte du **serveur**, pas une estimation en caractères
-divisés par 3,5 : c'est le seul qui puisse dire si la génération a buté sur son
-plafond, puisque le serveur s'arrête pile au plafond demandé quand il l'atteint.
-
-Un plafond atteint tronque la réponse, ce qui est un défaut visible ; un plafond
-trop haut ne coûte « que » du budget de sources. Le `WARNING` sur
-`prompt_eval_count` dira si la nouvelle valeur fait déborder la fenêtre.
-
-Une fois la valeur posée, relancer `make eval` : le budget de sources en dérive,
-donc `contextes_ecartes`, `part_utile_caracteres` et `citations_par_reponse`
-bougeront — et la comparaison appariée dira lesquelles des 138 questions
-basculent.
-
-## Prérequis
-
-```bash
-cd ~/mes_projets/llm-service && make up
-```
-
-Vérifier que le modèle attendu est servi :
-
-```bash
-make models
-```
+Après tout changement, relancer `make eval` : le budget de sources en dérive, et la comparaison appariée dit quelles questions basculent.
 
 ## Dépannage
 
 | Symptôme | Cause probable |
 |---|---|
-| `/health` renvoie `services.llm: false` | `llm-service` n'est pas démarré, ou le réseau `llm-net` n'existe pas |
-| `network llm-net not found` | Lancer `make up` dans `llm-service` d'abord |
-| HTTP 400 « maximum context length » | `LLM_NUM_CTX` supérieur à la fenêtre que le serveur central sert — `/health` la publie sous `moteur_llm.fenetre_servie` |
+| `/health` rend `services.llm: false` | `llm-service` n'est pas démarré, ou le réseau `llm-net` n'existe pas |
+| `network llm-net not found` au démarrage | Lancer `make up` dans `llm-service` d'abord |
+| HTTP 400 « maximum context length » | `LLM_NUM_CTX` dépasse la fenêtre servie, publiée sous `moteur_llm.fenetre_servie` |
+| Réponse de 17 à 30 s | Ordre de grandeur normal d'une réponse réelle ; la génération porte l'essentiel du temps ([README](../README.md#retours-de-fonctionnement)) |

@@ -1,95 +1,64 @@
-# Installer et activer CUDA pour l'agent
+# Le GPU de l'agent : l'activer, le vérifier, le retirer
 
-**Pour qui** : quelqu'un qui monte ce projet sur une machine neuve, qui veut
-savoir si l'agent calcule sur le GPU, et qui n'a jamais vu ce chantier.
+Comment l'agent calcule ses embeddings et son reranking sur le GPU, comment le vérifier, ce que cela coûte et comment revenir au processeur. Pour qui monte le projet sur une machine neuve ou partage la carte avec un autre service.
 
-**Ce que ce document ne fait pas** : décider que le GPU vaut le coup sur ce
-service. Cette question a une réponse mesurée, et elle est au §7 — lisez-la avant
-d'allumer quoi que ce soit en production.
+Seuls l'embedder et le cross-encoder de l'agent sont concernés. La génération tourne sur le serveur d'inférence, externe à ce dépôt ([llm.md](llm.md)).
 
-Chaque affirmation de ce document porte la commande qui la vérifie. Les chiffres
-portent leur date et leur étiquette : `mesuré` (relevé ici, par la commande
-indiquée), `cité` (relevé ailleurs, avec son site), `supposé` (ni l'un ni
-l'autre — il n'y en a aucun ici).
+## 1. Les trois conditions
 
----
+Le calcul part sur la carte si et seulement si les trois conditions sont vraies. Chacune, seule, ramène tout sur le processeur, sans message : le service répond, plus lentement.
 
-## 1. Les trois conditions, et chacune suffit à éteindre le GPU
-
-Ce service calcule sur le GPU **si et seulement si les trois sont vraies en même
-temps**. Il n'y a aucune hiérarchie entre elles : chacune, seule, ramène tout sur
-le CPU, et **aucune ne se signale**. Le service répond, les tests passent, les
-réponses sont justes — simplement plus lentes.
-
-| | la condition | où elle se règle | ce qui la lit |
+| | Condition | Où elle se règle | Ce qui la lit |
 |---|---|---|---|
-| **(a)** | `torch` est un build **CUDA** dans l'image | `Dockerfile.agent`, `ARG TORCH_INDEX_URL` | `torch.version.cuda` |
-| **(b)** | le conteneur a **accès à la carte** | `docker-compose.yml`, bloc `deploy.resources.reservations.devices` du service `agent-api`, **plus** le NVIDIA Container Toolkit installé sur l'hôte | `torch.cuda.is_available()` |
-| **(c)** | le **réglage** nomme la carte | `TORCH_DEVICE` dans le `.env` (défaut : `cuda`) | `settings.torch_device` |
+| (a) | `torch` est un build CUDA dans l'image | `Dockerfile.agent`, `ARG TORCH_INDEX_URL` (défaut `cu130`) | `torch.version.cuda` |
+| (b) | le conteneur accède à la carte | bloc `deploy.resources.reservations.devices` du service `agent-api` dans `docker-compose.yml`, plus le NVIDIA Container Toolkit sur l'hôte | `torch.cuda.is_available()` |
+| (c) | le réglage nomme la carte | `TORCH_DEVICE` dans le `.env` (défaut du code : `cuda`) | `settings.torch_device` |
 
-**Les trois sont indépendantes.** Reconstruire l'image avec un build CUDA et
-réserver la carte ne met **pas** ce service sur le GPU si `TORCH_DEVICE` dit
-`cpu` ; et inversement, `TORCH_DEVICE=cuda` ne sert à rien si l'image est en CPU
-ou si la carte n'entre pas dans le conteneur. C'est pour ça qu'on les vérifie
-une par une, §2 à §4.
-
-**(c) vaut `cuda` depuis le 11 septembre 2026**, sur mesure — le §7 donne les
-chiffres. `TORCH_DEVICE=cpu` ramène tout sur processeur sans rien reconstruire.
-
-Les trois sont publiées en continu par `GET /health`, champ `torch_device` :
+`GET /health` publie les trois sous `torch_device` :
 
 ```bash
 curl -s http://localhost:8011/health | python3 -m json.tool
 ```
 
+`mesuré` le 27 septembre 2026 à 06:19 UTC sur le service :
+
 ```
 "torch_device": {
-    "requested": "cuda",            <- condition (c)
-    "torch_version": "2.14.0+cu130",<- condition (a), le suffixe
-    "cuda_build": "13.0",           <- condition (a), la version CUDA compilée
-    "cuda_available": true,         <- condition (b)
-    "embedding": "cuda:0",          <- le modèle est-il POSÉ sur la carte
-    "rerank": "cuda:0"
+    "requested": "cuda",             <- condition (c)
+    "torch_version": "2.14.0+cu130", <- condition (a), le suffixe
+    "cuda_build": "13.0",            <- condition (a), la version CUDA compilée
+    "cuda_available": true,          <- condition (b)
+    "embedding": "cuda:0",           <- le modèle est posé sur la carte
+    "rerank": "cuda:0",
+    "hors_d_atteinte": null,
+    "concurrence_max": 4,
+    "pic_memoire_reservee_mio": 1234.0
 }
 ```
 
-`embedding` et `rerank` valent `null` tant que le modèle concerné n'a pas été
-chargé : la route de santé ne charge rien, et un `null` se lit « personne n'a
-encore eu besoin de ce modèle ». Posez une question à l'agent, puis relisez.
+`embedding` et `rerank` valent `null` tant que le modèle n'a pas été chargé : la route de santé ne charge rien. Poser une question, puis relire.
 
----
-
-## 2. Vérifier la condition (a) : le build de torch dans l'image
+## 2. Vérifier (a) : le build de torch
 
 ```bash
 docker exec rag-agent-api python -c "import torch; print(torch.__version__, torch.version.cuda, torch.backends.cuda.is_built(), torch.cuda.is_available())"
 ```
 
-| ce qui sort | ce que ça veut dire |
+| Sortie | Lecture |
 |---|---|
-| `2.14.0+cpu None False False` | build **CPU**. Aucune réservation de GPU n'y changera rien : il faut **reconstruire l'image** |
-| `2.14.0+cu130 13.0 True False` | build CUDA, mais **la carte n'est pas visible** → condition (b), §3 |
-| `2.14.0+cu130 13.0 True True` | conditions (a) et (b) tenues. Reste (c), §4 |
+| `2.14.0+cpu None False False` | Build CPU : reconstruire l'image |
+| `2.14.0+cu130 13.0 True False` | Build CUDA, carte invisible : condition (b), §3 |
+| `2.14.0+cu130 13.0 True True` | (a) et (b) tenues ; reste (c), §4 |
 
-`torch.backends.cuda.is_built()` est la forme canonique de la question ; le code
-de ce dépôt lit `torch.version.cuda` à la place, qui dit la même chose **et en
-plus quelle version** — le motif est écrit au site, dans `TorchDeviceHealth`
-(`src/api/schemas.py`).
+`mesuré` le 27 septembre 2026 à 06:27 UTC : `2.14.0+cu130 13.0 True True`.
 
-**Vérifier une image AVANT de la servir**, ce qui distingue une reconstruction
-d'un pari :
+Vérifier une image avant de la servir (sans `--gpus`, `is_available()` rend `False`, ce qui est attendu : seule la ligne du build compte) :
 
 ```bash
 docker run --rm --entrypoint sh rag-agent-chat-agent-api:latest -c 'python -c "import torch; print(torch.__version__, torch.version.cuda)"'
 ```
 
-Sans carte attachée, `torch.cuda.is_available()` rendra `False` dans ce
-`docker run` : c'est normal et attendu, il n'y a pas de `--gpus` ici. Ce que
-cette commande vérifie est **le build**, pas l'accès.
-
----
-
-## 3. Vérifier la condition (b) : le conteneur atteint la carte
+## 3. Vérifier (b) : le conteneur atteint la carte
 
 ### 3.1 Sur l'hôte
 
@@ -99,31 +68,15 @@ nvidia-ctk --version
 docker info | grep -i runtime
 ```
 
-`nvidia-smi` doit afficher la carte et, **en haut à droite, la version CUDA du
-pilote** — c'est le chiffre du §5. `nvidia-ctk --version` doit répondre : c'est
-le NVIDIA Container Toolkit, sans lequel Docker ne sait pas donner une carte à un
-conteneur. `docker info` doit lister `nvidia` parmi les `Runtimes`.
+`nvidia-smi` affiche la carte et, en haut à droite, la version CUDA du pilote (celle du §5). `nvidia-ctk` est le NVIDIA Container Toolkit ; sans lui, Docker ne donne pas de carte à un conteneur. `docker info` doit lister `nvidia` parmi les runtimes.
 
-Si `nvidia-ctk` n'existe pas, rien de ce qui suit ne marchera : installez le
-toolkit (paquet `nvidia-container-toolkit` de NVIDIA), puis
-`sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`.
-**Attention** : redémarrer le démon Docker redémarre les conteneurs ; sur une
-machine qui sert, c'est une décision d'exploitation, pas un détail.
+`mesuré` sur ce poste le 27 septembre 2026 à 06:27 UTC : pilote 595.91.07, CUDA du pilote 13.2, NVIDIA L4 de 23 034 MiB, toolkit 1.19.1, runtime `nvidia` présent.
 
-Relevé de ce poste, `mesuré` le **11 septembre 2026 à 12:23 UTC** par les trois
-commandes ci-dessus :
-
-| | valeur |
-|---|---|
-| pilote | **595.71.05** |
-| CUDA du pilote | **13.2** |
-| carte | **NVIDIA L4**, 23 034 Mio |
-| NVIDIA Container Toolkit | **1.19.1** |
-| runtime `nvidia` dans Docker | **présent** |
+Si le toolkit manque : installer le paquet `nvidia-container-toolkit`, puis `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`. Redémarrer le démon Docker redémarre tous les conteneurs de la machine : c'est une décision d'exploitation.
 
 ### 3.2 La réservation dans le compose
 
-Elle vit dans `docker-compose.yml`, sur le **seul** service `agent-api` :
+Elle vit sur le seul service `agent-api` :
 
 ```yaml
     deploy:
@@ -135,13 +88,9 @@ Elle vit dans `docker-compose.yml`, sur le **seul** service `agent-api` :
               capabilities: [gpu]
 ```
 
-Elle ne vaut rien tant que le conteneur n'a pas été **recréé** : `docker compose
-up -d` sur un conteneur déjà en place avec une réservation ajoutée le recrée,
-mais vérifiez-le plutôt que de l'espérer.
+Elle ne vaut qu'après recréation du conteneur.
 
-### 3.3 Vérifier que la carte est bien ENTRÉE dans le conteneur
-
-Trois lectures, de la plus extérieure à la plus intérieure :
+### 3.3 La carte est-elle entrée dans le conteneur ?
 
 ```bash
 docker inspect rag-agent-api --format '{{json .HostConfig.DeviceRequests}}'
@@ -149,231 +98,92 @@ docker exec rag-agent-api sh -c 'ls /dev/nvidia*'
 docker exec rag-agent-api python -c "import torch; print(torch.cuda.is_available())"
 ```
 
-- la première doit rendre autre chose que `null` — elle dit ce que **Docker a
-  demandé** ;
-- la deuxième doit lister des périphériques (`/dev/nvidia0`, `/dev/nvidiactl`…)
-  — elle dit ce qui est **réellement entré**. Un `No such file or directory`
-  avec une `DeviceRequests` non nulle désigne le toolkit de l'hôte ;
-- la troisième dit que **torch** les voit. Elle peut rendre `False` alors que
-  `/dev/nvidia*` existe : c'est alors la condition (a), ou une incompatibilité
-  de version — §5.
+- La première dit ce que Docker a demandé ; elle ne doit pas rendre `null`.
+- La deuxième dit ce qui est entré. Aucun périphérique avec une demande non nulle désigne le toolkit de l'hôte.
+- La troisième dit que torch voit la carte. `False` avec `/dev/nvidia*` présent désigne la condition (a) ou une incompatibilité de version (§5).
 
----
-
-## 4. Vérifier la condition (c) : le réglage
+## 4. Vérifier (c) : le réglage
 
 ```bash
 docker exec rag-agent-api python -c "from src.agent.settings import settings; print(settings.torch_device)"
 ```
 
-Le réglage se change dans le `.env` du projet, sans reconstruire l'image :
+Le réglage se change dans le `.env`, sans reconstruire, puis `docker compose up -d agent-api` (le conteneur est recréé ; `docker compose restart` ne relit pas le `.env`). Valeurs acceptées : ce que torch accepte, `cpu`, `cuda`, `cuda:1`. La valeur n'est pas validée au démarrage : un service debout qui publie son état se diagnostique mieux qu'un service qui refuse de démarrer.
 
-```
-TORCH_DEVICE=cuda
-```
-
-puis `docker compose up -d` (le conteneur est recréé pour prendre la nouvelle
-variable ; `docker compose restart` **ne relit pas** le `.env`).
-
-Valeurs acceptées : tout ce que torch accepte — `cpu`, `cuda`, `cuda:1`. La
-valeur n'est **pas** validée au démarrage, délibérément : la liste des
-périphériques que torch connaît dépend du build, et un service qui refuserait de
-démarrer sur un réglage inconnu serait plus difficile à diagnostiquer qu'un
-service debout qui publie son état. Le motif complet est au site du réglage,
-`src/agent/settings.py`.
-
-**Ce qui se passe si vous demandez `cuda` sans que (a) ou (b) soit tenue** :
-`torch` lève au chargement du **premier modèle**, c'est-à-dire à la **première
-recherche**, et non au démarrage. Le message est
-`Torch not compiled with CUDA enabled` (condition (a) manquante) ou
-`no CUDA-capable device is detected` / `Found no NVIDIA driver` (condition (b)).
-`/health` reste à `200`, la recherche rend une erreur. **C'est pourquoi on lit
-`/health` AVANT de changer ce réglage** : les trois champs y sont, et ils disent
-lequel des deux cas vous attend.
-
----
+Demander `cuda` sans (a) ou (b) fait lever torch au chargement du premier modèle, donc à la première recherche : `Torch not compiled with CUDA enabled` pour (a), `no CUDA-capable device is detected` ou `Found no NVIDIA driver` pour (b). `/health` reste à 200. Lire `/health` avant de changer ce réglage.
 
 ## 5. Quelle roue de torch pour quel pilote
 
-Les roues de PyTorch portent un suffixe de build : `+cpu`, `+cu126`, `+cu128`,
-`+cu130`. Le nombre est la version du **runtime CUDA embarqué dans la roue** —
-pas celle de votre pilote, et pas celle de votre carte.
+Le suffixe d'une roue PyTorch (`+cpu`, `+cu126`, `+cu128`, `+cu130`) est la version du runtime CUDA embarqué dans la roue. Un pilote sert les runtimes antérieurs ou égaux au sien, jamais postérieurs : un pilote CUDA 13.2 sert `cu130`, `cu129`, `cu128`, `cu126`.
 
-**La règle** : un pilote NVIDIA sert les runtimes CUDA **antérieurs ou égaux** au
-sien, jamais postérieurs. Un pilote qui annonce CUDA 13.2 sert donc `cu130`,
-`cu129`, `cu128`, `cu126` ; il ne servirait pas un hypothétique `cu140`.
-
-**Ce qui se passe si on se trompe** :
-
-| l'erreur | le symptôme |
+| Erreur | Symptôme |
 |---|---|
-| roue trop **récente** pour le pilote | `torch.cuda.is_available()` rend `False`, ou `CUDA driver version is insufficient for CUDA runtime version` au premier calcul. Le conteneur démarre, `/health` répond, seules les recherches tombent |
-| roue **CPU** installée par-dessus une roue CUDA (ou l'inverse) | `torch.__version__` et `torch.version.cuda` se contredisent. Un garde le voit : `test_le_suffixe_du_build_et_la_version_cuda_disent_la_meme_chose` |
-| carte trop **ancienne** pour le build | `NVIDIA GeForce ... with CUDA capability sm_XX is not compatible with the current PyTorch installation`. CUDA 13 a retiré les architectures les plus anciennes ; la L4 de ce poste est `sm_89`, largement dans la fenêtre |
+| Roue trop récente pour le pilote | `is_available()` rend `False`, ou `CUDA driver version is insufficient` au premier calcul ; seules les recherches tombent |
+| Roue CPU installée par-dessus une roue CUDA, ou l'inverse | `torch.__version__` et `torch.version.cuda` se contredisent ; `test_le_suffixe_du_build_et_la_version_cuda_disent_la_meme_chose` le voit |
+| Carte trop ancienne pour le build | `… with CUDA capability sm_XX is not compatible …` ; la L4 est `sm_89`, dans la fenêtre |
 
-**Comment choisir, en pratique** : prenez le plus haut index que votre pilote
-sert **et** qui publie la version de torch que vous voulez. Les index ne portent
-pas tous les mêmes versions. `mesuré` le 11 septembre 2026, en cp312 / x86_64,
-par :
+Choisir le plus haut index que le pilote sert et qui publie la version de torch voulue. `mesuré` le 11 septembre 2026, en cp312 / x86_64 :
 
 ```bash
 curl -s https://download.pytorch.org/whl/cu130/torch/ | grep -o 'torch-[0-9][0-9.]*+[a-z0-9]*-cp312-cp312-manylinux[_0-9]*x86_64\.whl' | sed 's/torch-//;s/-cp312.*//' | sort -V -u | tail -3
 ```
 
-| index | version de torch la plus haute |
+| Index | Plus haute version de torch |
 |---|---|
-| `cu126` | **2.14.0** |
+| `cu126` | 2.14.0 |
 | `cu128` | 2.11.0 |
 | `cu129` | 2.13.0 |
-| `cu130` | **2.14.0** |
-| `cpu` | **2.14.0** |
+| `cu130` | 2.14.0 |
+| `cpu` | 2.14.0 |
 
-Ce dépôt a retenu **`cu130`** : c'est le runtime le plus haut que le pilote 595
-sert, et il publie `2.14.0`, **la version que l'image portait déjà en CPU**. Le
-changement porte donc sur le build, pas sur la version de torch — un écart de
-moins à expliquer si une campagne bouge.
-
-Le choix se change sans éditer le `Dockerfile` :
+Le dépôt retient `cu130` : le plus haut runtime servi par le pilote, à la même version de torch que le build CPU. Changer d'index sans éditer le Dockerfile :
 
 ```bash
 docker build -f Dockerfile.agent --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126 -t rag-agent-chat-agent-api:latest .
 ```
 
----
+## 6. Ce que cela coûte : la taille de l'image
 
-## 6. Ce que ça coûte : la taille de l'image
+Mesurer la taille par `docker image inspect -f '{{.Size}}'`. La colonne `SIZE` de `docker images` rend une autre grandeur sur ce poste (10,5 GB affichés pour l'image servie) et ne sert pas à comparer.
 
-`mesuré` le 11 septembre 2026, `docker images` :
+`mesuré` le 27 septembre 2026 à 06:20 UTC, champ `.Size` :
 
-| build | id | taille de l'image `rag-agent-chat-agent-api` |
-|---|---|---|
-| `+cpu` (étiquetée `2026-09-11-avant-gpu`) | `2f4f1aa93f55` | **2,92 Go** |
-| `+cu130` (étiquetée `2026-09-11-gpu-cu130`) | `f4d488b447a6` | **10,5 Go** |
-| | | **+7,58 Go, soit ×3,6** |
+| Build | Image | Étiquette | Taille |
+|---|---|---|---|
+| `+cpu` | `2f4f1aa93f55` | `2026-09-11-avant-gpu` | 627 992 741 octets (0,63 Go) |
+| `+cu130` | `fc06b6f86168` | `2026-09-11-gpu-cu130` | 3 445 750 805 octets (3,45 Go) |
+| `+cu130`, image servie | `3eaf733ef1c2` | `latest`, `v1.1.0` | 3 446 416 662 octets (3,45 Go) |
 
-Ce coût était le motif écrit du choix CPU d'origine, et il n'a pas disparu : il
-est simplement devenu le prix d'une mesure que le propriétaire a demandée.
-Vérifiez la place disponible avant de reconstruire :
+Le build CUDA multiplie la taille par 5,5 environ (`calculé` depuis les deux premières lignes). Vérifier la place disponible avant de reconstruire : `df -h /var/lib/docker`.
 
-```bash
-df -h /var/lib/docker
-```
+## 7. Ce que le GPU rapporte
 
----
+`mesuré` le 11 septembre 2026, `make eval`, 138 questions ; site canonique : [la campagne du 11 septembre](campagnes/2026-09-11-le-gpu-sur-les-etages-torch.md). Les deux bases CPU sont publiées, parce que la base change le chiffre :
 
-## 7. Ce que le GPU rapporte ici — MESURÉ le 11 septembre 2026
-
-**La question n'était pas « peut-on mettre le GPU » mais « est-ce que ça vaut le
-coup ».** Le GPU de ce poste n'est pas libre : le serveur LLM y sert les modèles
-du projet et porte l'essentiel du temps d'une réponse, donc mettre torch sur la même carte
-optimise une petite part du temps en risquant d'en ralentir une grande.
-
-### 7.1 Ce qu'on craignait
-
-Partition d'une réponse **AVANT**, `citée` de
-`runs/2026-09-10-lecteur-neuf-reglage.json` :
-
-| étage | p50 | où ça tournait |
-|---|---|---|
-| `generation` | **4 616 ms** (67 %) | GPU — le serveur LLM |
-| `translation` | 1 196 ms (17 %) | GPU — le serveur LLM |
-| `rerank` | 622 ms (9 %) | CPU — le cross-encoder |
-| `dense` | 115 ms (1,7 %) | CPU — l'embedder |
-| **total** | **6 846 ms** | |
-
-Le travail de torch valait **~737 ms sur 6 846, soit 11 %** : le plafond du gain.
-Le risque, lui, portait sur les 67 % de la génération.
-
-### 7.2 Ce que la mesure a rendu
-
-`mesuré` le 11 septembre 2026, `make eval`, **138 questions**, `rc=0`. Site
-canonique de ces chiffres :
-`documentation/campagnes/2026-09-11-le-gpu-sur-les-etages-torch.md`.
-
-**CE SITE PORTAIT UNE BASE POUR UNE AUTRE, ET C'ÉTAIT LE TROISIÈME.** Il
-annonçait « comparaison appariée à `runs/2026-09-10-lecteur-neuf-reglage.json` »
-en portant **six valeurs sur six** de `runs/2026-09-08-reference.json` — la
-faute que l'audit du lot 11 avait trouvée à deux autres sites, réparée à ces
-deux-là par le lot 12, et laissée intacte ici. *Corriger un chiffre à un
-sous-ensemble de ses sites est la dérive que le §4.13 du registre nomme depuis
-le début.* Les **deux** lectures sont donc écrites, chacune avec sa base,
-**recalculées depuis les artefacts versionnés de `runs/`, sans rejouer aucune
-campagne** (`mesuré` le 14 septembre 2026).
-
-| métrique | CPU `08-reference` | CPU `10-lecteur-neuf` | GPU `11-cuda` |
+| Métrique | CPU `08-reference` | CPU `10-lecteur-neuf` | GPU `11-cuda` |
 |---|---:|---:|---:|
-| `rerank_ms` p50 | 498 | 622 | **58** |
-| `rerank_ms` p95 | 2 943 | 1 216 | **68** |
-| `dense_ms` p50 | 120 | 115 | **72** |
-| `dense_ms` p95 | 1 516 | 549 | **85** |
+| `rerank_ms` p50 | 498 | 622 | 58 |
+| `rerank_ms` p95 | 2 943 | 1 216 | 68 |
+| `dense_ms` p50 | 120 | 115 | 72 |
+| `dense_ms` p95 | 1 516 | 549 | 85 |
 | `generation_ms` p50 | 4 682 | 4 616 | 4 722 |
-| **`total_ms` p50** | **7 298** | **6 846** | **6 481** |
-
-**LA BASE CHANGE LE CHIFFRE, PAS LE VERDICT.** Les deux lectures :
+| `total_ms` p50 | 7 298 | 6 846 | 6 481 |
 
 | | contre `2026-09-08-reference` | contre `2026-09-10-lecteur-neuf-reglage` |
 |---|---:|---:|
-| | *ce que `make eval` compare par défaut* | *le plus récent comparable* |
-| `total_ms` p50 | **−817 ms (−11,2 %)** | **−365 ms (−5,33 %)** |
-| `generation_ms` p50 — la contention | **+40 ms** | **+106 ms** |
-| rapport gain / contention | **20,4 pour 1** | **3,4 pour 1** |
+| `total_ms` p50 | −817 ms (−11,2 %) | −365 ms (−5,33 %) |
+| `generation_ms` p50 (contention) | +40 ms | +106 ms |
+| rapport gain / contention | 20,4 pour 1 | 3,4 pour 1 |
 
-**LA CONTENTION EST RÉELLE ET PETITE**, et le GPU rapporte de **3,4 à 20,4 fois**
-ce qu'il coûte selon la base. Le « rapport de vingt contre un » qui figurait ici
-sans sa base valait **3,4 pour 1** contre la base que ce même paragraphe nommait
-— un facteur six. La décision tient sur l'une comme sur l'autre lecture ; aucune
-des deux ne se cite sans dire laquelle.
+- La contention avec le serveur d'inférence est réelle et petite ; le gain vaut 3,4 à 20,4 fois son coût selon la base. Ne citer l'un de ces rapports qu'avec sa base.
+- Le GPU est surtout plus régulier : `rerank_ms` p95 passe de 2 943 à 68 ms.
+- Le rappel ne bouge pas : neuf métriques sur dix identiques question par question, 130/130 ex æquo ; `rang_reciproque` baisse sur une seule question (`G-006`, 1,0 → 0,5), effet numérique de deux candidats quasi ex æquo.
 
-**LA MÉMOIRE N'EST PAS EN CAUSE — MAIS ELLE NE SE LIT PAS COMME UNE RÉSIDENCE.**
-Ce paragraphe annonçait « 1 262 MiB pour l'agent » comme si l'agent occupait ce
-volume en permanence. **C'est faux la plupart du temps** : les deux modèles se
-chargent à la première utilisation, et l'empreinte de cet agent est
-**PARESSEUSE** — `mesuré` le 14 septembre 2026 à 08:5x UTC
-(`nvidia-smi --query-compute-apps` croisé avec `docker inspect … .State.Pid`) :
-**0 Mio au repos**, **708 Mio** après un `POST /search`, **1 294 Mio** après un
-`POST /answer`. C'est un **cliquet**, pas un plateau : il monte et ne redescend
-pas, l'allocateur de torch ne rendant rien. Site canonique de ces trois paliers
-et de ce qu'ils imposent à un voisin de carte :
-[`axes_amelioration.md`](axes_amelioration.md) §4.50. *Ne jamais déduire la
-place de cet agent de la mémoire libre observée pendant qu'il est au repos.*
+`TORCH_DEVICE` vaut `cuda` par défaut depuis cette campagne, décision du propriétaire.
 
-**Et le GPU est surtout beaucoup plus RÉGULIER.** Les p95 sont l'information la
-plus utile ici : `rerank_ms` passe de 2 943 à 68 ms. Sur CPU, le cross-encoder est
-en concurrence avec tout ce qui tourne sur la machine ; sur la carte, il ne l'est
-qu'avec le serveur LLM. Pour un service qui doit répondre à plusieurs utilisateurs, c'est
-la queue de distribution qui décide du ressenti, pas la médiane.
+## 8. Revenir au processeur
 
-### 7.3 Le rappel ne bouge pas — à une question près, et elle est écrite
-
-Neuf métriques de rappel sur dix sont **identiques question par question**,
-130/130 ex æquo. La dixième, `rang_reciproque`, baisse sur **une seule**
-question — `G-006`, 1,0 → 0,5 : le bon élément passe du rang 1 au rang 2. Δ moyen
-**−0,0038**, p=1,000, et `rappel_recherche`, `rappel_elements` et
-`rappel_documents` valent **1,0 des deux côtés** sur cette question : le document
-est toujours trouvé.
-
-C'est la conséquence attendue de ce que le lot 10 avait mesuré — le périphérique
-déplace les scores du cross-encoder de **5,48 × 10⁻⁶** — mais **sa conclusion
-« classement inchangé » est ici corrigée** : sur 138 questions réelles, deux
-candidats quasi ex æquo finissent par s'inverser. C'est un effet numérique, pas
-une régression de qualité.
-
-### 7.4 La décision
-
-**`TORCH_DEVICE` vaut `cuda` par défaut depuis le 11 septembre 2026**, décision
-du propriétaire prise contre cette mesure. Le §P1 du registre demande un rapport
-prix/apport : il est de 817 contre 40.
-
-
----
-
-## 8. Le retour en arrière
-
-Il ne demande **aucune édition de fichier**, et il est en deux temps selon ce
-qu'on veut défaire.
-
-**Éteindre le GPU sans rien reconstruire** — c'est le geste à connaître, il prend
-quelques secondes :
+**Éteindre le GPU sans rien reconstruire** :
 
 ```bash
 # dans le .env du projet
@@ -384,190 +194,92 @@ docker compose up -d agent-api
 curl -s http://localhost:8011/health | python3 -m json.tool | grep -A6 torch_device
 ```
 
-**Revenir à l'image CPU** — l'image d'avant est étiquetée, et c'est ce qui rend
-la reconstruction réversible :
+**Revenir à l'image CPU étiquetée** :
 
 ```bash
-docker images | grep agent-api          # vérifier que l'étiquette existe
+docker image inspect -f '{{.Id}}' rag-agent-chat-agent-api:2026-09-11-avant-gpu
 docker tag rag-agent-chat-agent-api:2026-09-11-avant-gpu rag-agent-chat-agent-api:latest
 docker compose up -d --no-build agent-api
-docker exec rag-agent-api python -c "import torch; print(torch.__version__)"
 ```
 
-**Reconstruire une image CPU depuis les sources** :
+Cette image porte le code du 11 septembre 2026, pas seulement un autre build : tous les correctifs livrés depuis repartent avec. Pour garder le code courant, reconstruire en CPU :
 
 ```bash
 docker build -f Dockerfile.agent --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu -t rag-agent-chat-agent-api:latest .
 ```
 
-**Retirer la réservation** — ATTENTION **EN DEUX LIGNES, JAMAIS UNE.** Retirer la
-réservation SANS toucher `TORCH_DEVICE` laisse le défaut à `cuda` sur une
-machine où torch ne voit plus de carte : le conteneur démarre, le healthcheck est
-vert, et **chaque recherche rend 500**. `mesuré` le 14 septembre 2026 sur un
-jumeau branché aux vrais stores, `docker run` sans `--gpus` :
-`POST /search` → **500**, `GET /health` → **200**. Les deux lignes vont ensemble :
+**Retirer la réservation : deux lignes, jamais une.** Retirer la réservation sans poser `TORCH_DEVICE=cpu` donne un conteneur qui démarre, un healthcheck vert, et 500 sur chaque recherche (`mesuré` le 14 septembre 2026 sur un jumeau branché aux vrais stores : `POST /search` → 500, `GET /health` → 200).
 
 ```bash
-# 1. dans le .env — SANS CETTE LIGNE le service démarre cassé
+# 1. dans le .env
 TORCH_DEVICE=cpu
 ```
 ```bash
-# 2. commenter le bloc `deploy:` du service `agent-api` dans docker-compose.yml
+# 2. après avoir commenté le bloc deploy: du service agent-api
 docker compose up -d agent-api
-docker inspect rag-agent-api --format '{{json .HostConfig.DeviceRequests}}'   # → null
+docker inspect rag-agent-api --format '{{json .HostConfig.DeviceRequests}}'
 curl -s http://localhost:8011/health | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['status'], d['torch_device']['hors_d_atteinte'])"
 ```
 
-La dernière commande est celle qui tranche, et elle est le garde-fou posé par le
-lot 12 : elle doit rendre **`ok None`**. Si elle rend **`degraded`** suivi d'un
-motif, la première ligne a été oubliée — `/health` le dit désormais au lieu de
-laisser la panne au seul journal.
+La dernière commande doit rendre `ok None`. `degraded` suivi d'un motif signale que la première ligne manque.
 
----
+## 9. Après un redémarrage
 
-## 9. Après un redémarrage : l'index lexical se reconstruit paresseusement
+Juste après la recréation du conteneur, `/health` annonce `index_lexical: false` jusqu'à la première recherche. Ne jamais lancer une campagne sur un service froid ; `scripts/evaluate.py` chauffe l'index et refuse la campagne (`rc=2`) s'il n'est toujours pas prêt. Détail : [stores.md](stores.md#lindex-bm25-vit-dans-le-processus-de-lagent).
 
-Ce n'est pas propre au GPU, mais ça mord à chaque fois qu'on recrée le conteneur,
-donc c'est ici. Juste après un redémarrage, `/health` annonce
-`"index_lexical": false` : l'index BM25 n'est pas encore construit, et la
-recherche est **dense seule** — amputée, sans le dire. La **première** recherche
-déclenche la reconstruction.
+## 10. Diagnostic
 
-Ne mesurez donc **jamais** une campagne sur un service qui vient de démarrer sans
-avoir chauffé. `scripts/evaluate.py` le fait pour vous et **refuse la campagne en
-`rc=2`** si `/health` n'annonce toujours pas l'index après la chauffe. Ce refus
-est un garde-fou : ne le contournez pas, servez-vous-en.
-
-```bash
-curl -s http://localhost:8011/health | python3 -c "import json,sys; print(json.load(sys.stdin)['services']['index_lexical'])"
-```
-
----
-
-## 10. Diagnostic : du symptôme à la condition
-
-| ce que vous voyez | la condition en cause | la commande qui tranche |
+| Symptôme | Condition | Commande qui tranche |
 |---|---|---|
-| `/health` : `cuda_build: null` | **(a)** — l'image est en CPU | `docker exec rag-agent-api python -c "import torch; print(torch.version.cuda)"` |
-| `cuda_build: "13.0"` mais `cuda_available: false` | **(b)** — la carte n'entre pas | `docker exec rag-agent-api sh -c 'ls /dev/nvidia*'` |
-| `cuda_available: true` mais `embedding: "cpu"` | **(c)** — le réglage. Depuis le 11 septembre 2026 le défaut est `cuda`, donc un `cpu` ici vient d'un `.env` qui le pose | `docker exec rag-agent-api python -c "from src.agent.settings import settings; print(settings.torch_device)"` |
-| `embedding: null` après une requête, `status: ok` | le modèle n'a pas été chargé : la recherche n'est pas allée jusque-là (voir les 503 de concordance) | `curl -s localhost:8011/health \| grep embedding_model` |
-| `embedding: null` après une requête, **`status: degraded`** | **le chargement LÈVE** — c'est la panne du périphérique, pas la concordance. Le champ `hors_d_atteinte` en donne la cause exacte | `curl -s localhost:8011/health \| python3 -c "import json,sys; print(json.load(sys.stdin)['torch_device']['hors_d_atteinte'])"` |
-| une recherche rend 500, `/health` reste `200` **et `status: degraded`** | `TORCH_DEVICE` nomme un périphérique que le build ou la machine ne sert pas, ou le chargement a levé (mémoire, cache HF) | `docker logs rag-agent-api --tail 50` |
-| une recherche rend 500 et `/health` dit **`status: ok`** | la levée ne tient PAS au périphérique — `/health` ne la voit qu'après le premier échec de chargement, et seulement pour ces deux modèles | `docker logs rag-agent-api --tail 50` |
-| tout est vert, rien n'est plus rapide | la **contention** — §7 | `nvidia-smi` pendant une recherche |
+| `cuda_build: null` | (a), image CPU | `docker exec rag-agent-api python -c "import torch; print(torch.version.cuda)"` |
+| `cuda_build: "13.0"`, `cuda_available: false` | (b), carte absente du conteneur | `docker exec rag-agent-api sh -c 'ls /dev/nvidia*'` |
+| `cuda_available: true`, `embedding: "cpu"` | (c), un `.env` pose `cpu` | `docker exec rag-agent-api python -c "from src.agent.settings import settings; print(settings.torch_device)"` |
+| `embedding: null` après une requête, `status: ok` | le modèle n'a pas été chargé (voir les 503 de concordance) | `curl -s localhost:8011/health \| grep embedding_model` |
+| `embedding: null` après une requête, `status: degraded` | le chargement lève ; `hors_d_atteinte` en donne la cause | `curl -s localhost:8011/health \| python3 -c "import json,sys; print(json.load(sys.stdin)['torch_device']['hors_d_atteinte'])"` |
+| une recherche rend 500, `status: degraded` | `TORCH_DEVICE` nomme un périphérique non servi, ou le chargement a levé (mémoire, cache HF) | `docker logs rag-agent-api --tail 50` |
+| une recherche rend 500, `status: ok` | la levée ne tient pas au périphérique | `docker logs rag-agent-api --tail 50` |
+| tout est vert, rien n'est plus rapide | contention (§7) | `nvidia-smi` pendant une recherche |
 
----
+## 10bis. Ce que l'agent prend sur la carte
 
-## 10bis. Ce que cet agent PREND sur la carte, et ce qui le plafonne
-
-**À lire si vous partagez cette carte avec autre chose** — vLLM, un autre
-agent. `--gpu-memory-utilization` est une option de **lancement** de vLLM : le
-chiffre doit être bon **avant**.
-
-**Deux champs de `/health` répondent, et ils vont ensemble :**
+À lire avant de dimensionner un voisin de carte : `--gpu-memory-utilization` du serveur d'inférence est une option de lancement.
 
 ```bash
 curl -s http://localhost:8011/health | python3 -c "import json,sys; d=json.load(sys.stdin)['torch_device']; print('borne =', d['concurrence_max'], '| pic réservé =', d['pic_memoire_reservee_mio'], 'Mio')"
 ```
 
-- `concurrence_max` — la borne `TORCH_MAX_CONCURRENCY` (défaut **4**). C'est le
-  nombre maximal de requêtes admises **en même temps** dans un étage torch.
-  Au-delà, elles s'attendent au lieu de faire croître la carte ;
-- `pic_memoire_reservee_mio` — `torch.cuda.max_memory_reserved()`.
+- `concurrence_max` : la borne `TORCH_MAX_CONCURRENCY` (défaut 4), nombre maximal de requêtes admises en même temps dans un étage torch. Au-delà, elles attendent.
+- `pic_memoire_reservee_mio` : `torch.cuda.max_memory_reserved()`, avec trois pièges.
+  1. C'est un maximum historique : l'allocateur ne rend rien (`mesuré` le 14 septembre 2026 : 1 294 Mio à 09:08 UTC, 1 984 à 09:28, même PID).
+  2. `null` veut dire « aucun modèle chargé », pas zéro. Ne jamais dimensionner à ce moment-là.
+  3. Il sous-estime ce que `nvidia-smi` attribue au processus, de la taille du contexte CUDA (`mesuré` le 14 septembre 2026 à 09:34 UTC : 1 036,0 Mio contre 1 262 MiB, 226 MiB d'écart).
+- Il n'est lisible que par `/health` : un `docker exec … torch.cuda.max_memory_reserved()` démarre un autre processus et rend 0.
 
-**TROIS PIÈGES SUR CE SECOND CHIFFRE, et chacun a coûté quelque chose :**
-
-1. **c'est un MAXIMUM HISTORIQUE, pas une consommation courante.** L'allocateur
-   de torch ne rend rien : la valeur monte et ne redescend jamais. `mesuré` le
-   14 septembre 2026 sur le service : **1 294 Mio** à 09:08 UTC, **1 984** à
-   09:28, même PID, aucun redémarrage entre les deux ;
-2. **`null` ne veut pas dire zéro.** Tant qu'aucun modèle n'est chargé — au repos,
-   après un redémarrage, la nuit — le champ vaut `null`, c'est-à-dire *« on ne
-   sait pas encore »*. **Ne dimensionnez jamais une réservation sur ce moment-là** :
-   vous verriez 1,3 Go de libre en trop, vous les prendriez, et cet agent
-   tomberait **plus tard**, sans rapport apparent avec la cause ;
-3. **il SOUS-ESTIME ce que `nvidia-smi` attribue au processus**, de la taille du
-   contexte CUDA. `mesuré` le 14 septembre 2026 à 09:34 UTC : le champ rend
-   **1 036,0 Mio** quand `nvidia-smi` attribue **1 262 MiB** au même PID —
-   **226 MiB d'écart**. Ce champ sert à **vérifier que la borne tient**, pas à
-   dimensionner.
-
-**Et il n'est lisible QUE par cette route.** `docker exec rag-agent-api python -c
-"import torch; print(torch.cuda.max_memory_reserved())"` rend **0** : `docker
-exec` démarre un **autre** processus, avec un contexte CUDA neuf. `mesuré` à
-09:29 UTC, 0,0 Mio contre 1 984 MiB vus par `nvidia-smi` pour le même conteneur.
-
-**Le chiffre de réservation à rendre à un voisin de carte**, `calculé` le
-14 septembre 2026 depuis les paliers mesurés par le banc du pilote :
+Réservation à rendre à un voisin de carte, `calculé` le 14 septembre 2026 depuis cinq paliers mesurés en régime chaud :
 
     réservation(N) = 1 362 Mio + (N - 1) x 68,0 Mio
 
-**À la borne par défaut N = 4 : 1 566 Mio, arrondis à 2 048 Mio (2,00 Gio).**
-Il ne vaut **qu'une fois la borne en service et l'agent redémarré** : un processus
-qui a tourné sans borne garde son cliquet. Détail et **quatre** réserves : §4.51
-du registre.
+À N = 4 : 1 566 Mio, arrondis à 2 048 Mio. Le chiffre ne vaut qu'une fois la borne en service et l'agent redémarré. Dérivation et réserves : §4.51 et §4.53 du [registre](axes_amelioration.md).
 
-**LES CINQ PALIERS SONT EN RÉGIME CHAUD**, modèles déjà chargés, et c'est la
-réserve ajoutée le 14 septembre 2026. Le pic du **chargement** ne s'y trouve donc
-pas. Il est aujourd'hui borné — **une seule construction par modèle**, et elle
-tient un permis de la borne, `mesuré` et gardé par
-`tests/unit/test_peripherique_torch.py` — ce qui rend la forme applicable au
-démarrage à froid ; elle ne l'était pas quand le lot 12 a publié ce chiffre.
+Chaque modèle n'est construit qu'une fois, sous un permis de la borne, mais les deux modèles ont chacun leur verrou et peuvent se désérialiser ensemble. `mesuré` le 14 septembre 2026 (4 `/search` + 4 `/sources` à froid, pic tous modèles confondus) :
 
-**« PAR MODÈLE » N'EST PAS « À LA FOIS », et la nuance porte sur le chiffre qu'un
-voisin de carte réserve.** Les deux modèles ont chacun leur verrou
-(`_SingletonVerrouille` en instancie un par singleton) : rien n'interdit à
-l'embedder et au cross-encoder de se désérialiser ensemble. `mesuré` le
-14 septembre 2026 — doubles inertes, 4 `/search` + 4 `/sources` à froid, pic
-**tous modèles confondus**, sonde dont le contrôle positif sait voir 4, 5 et 8 :
-
-| `TORCH_MAX_CONCURRENCY` | pic mesuré | constructions au total |
+| `TORCH_MAX_CONCURRENCY` | Pic de désérialisations simultanées | Constructions au total |
 |---:|---:|---:|
 | 1 | 1 | 2 |
-| **4** — le défaut | **1** | 2 |
-| **5** | **2** | 2 |
+| 4 (défaut) | 1 | 2 |
+| 5 | 2 | 2 |
 | 8 | 2 | 2 |
 
-La colonne de droite est la **propriété** : **2 constructions au total** aux
-quatre bornes, soit **une par modèle**, jamais deux du même. La colonne du milieu
-est une **scène** : le pic 1 à la borne 4 tient à ce que les quatre permis sont
-consommés par des fils qui attendent le verrou de l'embedder, si bien qu'aucun
-n'atteint le cross-encoder ; à 5, un fil passe. **Le majorant qu'aucun réglage ne
-franchit est donc 2**, et c'est celui qu'on rend au voisin de carte.
+Ce tableau est le site canonique de ce chiffre. Le majorant qu'aucun réglage ne franchit est 2. Le surcoût transitoire d'une désérialisation n'est pas mesuré.
 
-**CE TABLEAU EST LE SITE CANONIQUE DE CE CHIFFRE.** Il est repris à
-[`pour_le_pipeline_ingestion.md`](pour_le_pipeline_ingestion.md) — délibérément,
-ce document devant se lire sans accès à celui-ci — et nulle part ailleurs ; le
-registre le cite en renvoyant ici. Dérivation et banc : §4.53 du registre.
+Coût de la borne quand elle mord, `mesuré` avec un étage de 70 ms : rien jusqu'à 4 requêtes simultanées, +625 ms sur la dernière servie à 40.
 
-Ce qui reste **non mesuré** : le surcoût transitoire d'une désérialisation, donc
-a fortiori de deux. Re-dérivation complète au §4.51.
+Relevé courant, `mesuré` le 27 septembre 2026 à 06:19 UTC (`nvidia-smi --query-compute-apps` croisé avec le cgroup du PID de chaque conteneur) : sur 23 034 MiB, le serveur d'inférence `vllm-central` tient 14 264 MiB, l'agent 1 460 MiB, un serveur d'inférence d'un autre projet du poste 4 468 MiB ; 2 355 MiB restent libres.
 
-**Ce que la borne coûte quand elle mord** — `mesuré`, étage à 70 ms : **rien**
-jusqu'à 4 requêtes simultanées, **+625 ms** sur la dernière servie à 40, qui est
-le plafond du fil d'exécution de FastAPI.
+## 11. Prouver que le GPU est atteint
 
----
+`cuda_available: true` dit que la carte est là, pas qu'elle sert. Trois preuves, et il en faut plus d'une :
 
-## 11. Prouver que le GPU est ATTEINT, pas seulement présent
-
-`/dev/nvidia*` et `cuda_available: true` disent que la carte est **là**. Ils ne
-disent pas qu'on s'en sert. Trois preuves, et il en faut plus d'une :
-
-1. **le champ publié** — `torch_device.embedding` et `.rerank` doivent nommer
-   `cuda`, après qu'une question a été posée ;
-2. **le journal du chargement** — deux lignes par modèle, celle qui dit le
-   périphérique *demandé* et celle qui dit celui que torch a *posé* :
-   ```bash
-   docker logs rag-agent-api 2>&1 | grep -i "périphérique"
-   ```
-3. **la mémoire prise sur la carte**, qui est la seule preuve extérieure au
-   programme :
-   ```bash
-   nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
-   ```
-   Un **second** processus doit y apparaître à côté de celui du serveur LLM.
-
-Un garde présent mais jamais atteint est la forme dominante des défauts trouvés
-sur ce chantier — neuf fois. Ne vous contentez pas de la première preuve.
+1. `torch_device.embedding` et `.rerank` nomment `cuda` après une question ;
+2. le journal du chargement nomme le périphérique demandé puis celui que torch a posé : `docker logs rag-agent-api 2>&1 | grep -i "périphérique"` ;
+3. la mémoire prise sur la carte, seule preuve extérieure au programme : `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv`, où le processus de l'agent apparaît à côté de celui du serveur d'inférence.
