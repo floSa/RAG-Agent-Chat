@@ -45,7 +45,7 @@ Le catalogue `/v1/models` porte aussi `created`, `owned_by`, `root`, `parent` et
 
 ## 4. Le relevé exige une réponse positive
 
-`GET /version` doit rendre un champ `version` de type chaîne ; à défaut, `moteur_llm` vaut `null`, qui se lit « je n'ai pas pu lire ». Le relevé ne sait pas nommer un autre moteur que vLLM : il dit seulement que ce n'est pas le serveur attendu. Un code HTTP 200 n'est pas un fait.
+`GET /version` doit rendre un champ `version` de type chaîne ; à défaut, `moteur_llm` vaut `null`, qui se lit « lecture impossible », jamais comme un nom de moteur. Le relevé ne sait pas nommer un autre moteur que vLLM : il dit seulement que ce n'est pas le serveur attendu. Un code HTTP 200 n'est pas un fait.
 
 Le modèle servi est cherché dans le catalogue, pas pris en première position. La relation d'appariement réduit les deux noms à leurs caractères alphanumériques minuscules et exige que le demandé soit un infixe du servi (`gemma4e4b` dans `googlegemma4e4bitqatw4a16ct`). Elle refuse un `id` qui porte, en segment entier, un mot de dérivation absent du nom demandé (`_MARQUEURS_DE_DERIVATION`, `src/api/main.py`).
 

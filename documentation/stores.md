@@ -67,7 +67,7 @@ Deux pièges à connaître :
 
 Le graphe porte la structure, pas le texte complet. L'agent relit dans ChromaDB le texte des éléments qui frôlent la troncature ; un tableau exporté dépasse souvent la limite. `GRAPH_TEXT_TRUNCATION` doit suivre le `graph_text_max_chars` de l'ingestion.
 
-Après une purge du graphe par le pipeline, la session que l'agent garde ouverte ne connaît plus les tags : `nebula3` rend alors un résultat en échec (`E_SEMANTIC_ERROR`), sans lever. L'agent rouvre la session et rejoue une fois sur cette seule erreur, et la sonde de `/health` lit un tag pour la voir (§4.80 du registre).
+Après une purge du graphe par le pipeline, la session que l'agent garde ouverte ne connaît plus les tags : `nebula3` rend alors un résultat en échec (`E_SEMANTIC_ERROR`), sans lever. L'agent rouvre la session et rejoue une fois sur cette seule erreur, et la sonde de `/health` lit un tag pour la voir (§4.80 et §4.81 du registre).
 
 ### Les trois réserves de lecture de `sequence`
 

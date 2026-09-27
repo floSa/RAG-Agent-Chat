@@ -61,7 +61,7 @@ Le registre n'est pas adossé à la capture d'usage, qui est désactivable : la 
 ## Face aux services voisins
 
 - **Un corpus qui bouge.** L'ingestion écrit pendant que l'agent tourne. La recherche dense suit ; l'index BM25 en mémoire est reconstruit par `POST /reindex`, que le pipeline appelle, ou par un filet de comptage ([stores.md](stores.md#lindex-bm25-vit-dans-le-processus-de-lagent)). Une reconstruction déclenchée par le filet tourne en tâche de fond, l'ancien index servant pendant ce temps ; une seule construction a lieu sous N requêtes concurrentes.
-- **Un store qui redémarre.** Les clients sont mémorisés et savent se rouvrir une fois ; une purge du graphe, qui rend la session NebulaGraph aveugle aux tags, est traitée de la même façon (§4.80 du [registre](axes_amelioration.md)).
+- **Un store qui redémarre.** Les clients sont mémorisés et savent se rouvrir une fois ; une purge du graphe, qui rend la session NebulaGraph aveugle aux tags, est traitée de la même façon (§4.80 et §4.81 du [registre](axes_amelioration.md)).
 - **Un serveur d'inférence partagé.** L'agent ne l'administre pas. Il relève et publie ce qui est servi ([moteur_llm.md](moteur_llm.md)), borne ses prompts côté client ([llm.md](llm.md)), et partage la carte avec lui ([gpu_cuda.md](gpu_cuda.md)).
 - **Un `/health` sous délai.** Les sondes partent en parallèle sous un plafond de 3 s, pour tenir dans les 5 s du healthcheck Docker ; sinon le frontend, qui attend `agent-api` en `service_healthy`, ne démarrerait jamais.
 
