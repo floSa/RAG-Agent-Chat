@@ -1,5 +1,8 @@
 # VÉRIF-40 — vérification indépendante de la documentation du livrable
 
+> **Archive de mesures : rapport d'audit daté.** Il décrit le dépôt à la date de son titre, avec les mesures faites ce jour-là, et ne se met pas à jour. Lire le verdict et les trouvailles, puis vérifier dans le registre ([axes_amelioration.md](../axes_amelioration.md)) comment chacune a été fermée. Entrée : [l'index des audits](README.md) ou la carte du [README](../../README.md#carte-de-la-documentation).
+
+
 **Rendu le 25 septembre 2026.** Objet : `README.md`,
 `documentation/etat_du_projet.md`, `documentation/prochaines_etapes.md`, et les
 ajouts datés de `documentation/llm.md` et

@@ -1,5 +1,8 @@
 # Campagnes d'évaluation
 
+> **Archive de mesures : le registre des campagnes versionnées.** Chaque fichier JSON de ce répertoire est la sortie d'une exécution de `scripts/evaluate.py` ou d'un banc ; ce fichier dit ce que chacune mesurait. Les chiffres valent pour la date de chaque campagne. Avant de comparer deux campagnes, lire la section « Lire une comparaison ». Entrée : [rag_evaluation_strategy.md](../documentation/rag_evaluation_strategy.md) ou la carte du [README](../README.md#carte-de-la-documentation).
+
+
 Chaque fichier est le résultat d'une exécution de `scripts/evaluate.py`. Ils sont
 versionnés pour que `make eval` puisse comparer, et pour que les décisions de
 réglage restent vérifiables plutôt que d'être affirmées.

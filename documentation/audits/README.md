@@ -1,5 +1,8 @@
 # Audits — documents datés, versés après mesure
 
+> **Archive de mesures : index des rapports d'audit.** Chaque fichier de ce répertoire est un rapport daté, et aucun ne se réécrit. Lire le rapport du lot visé, puis sa section du registre ([axes_amelioration.md](../axes_amelioration.md)). Entrée : la carte du [README](../../README.md#carte-de-la-documentation).
+
+
 Chaque fichier de ce répertoire est le rapport d'un audit indépendant, rendu à
 une date, sur un état du dépôt à cette date. Ils ne sont pas tenus à jour : leur
 valeur est d'être **le compte rendu de ce qui a été mesuré ce jour-là**.

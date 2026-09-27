@@ -1,5 +1,8 @@
 # Piloter le chantier d'audit et de refonte — `rag-agent-chat`
 
+> **Archive de mesures : le journal du chantier.** Il porte le protocole de travail, l'état du poste relevé à date (§4) et une ligne par conversation livrée (§6.1), avec ses commits, sa porte et ses mesures. Ses chiffres sont datés et ne se réécrivent pas. Pour mesurer la porte qualité, commencer par le §2.2 ; pour l'historique d'un lot, chercher sa ligne au §6.1. Entrée : la section « Reprendre le projet » du [README](../README.md#reprendre-le-projet).
+
+
 > Ouvert le **3 septembre 2026**, à la passation de
 > [`rag-ingestion-pipeline`](https://github.com/floSa/rag-ingestion-pipeline).
 > Le point d'entrée de l'autre côté est son `documentation/etat_des_lieux.md` :

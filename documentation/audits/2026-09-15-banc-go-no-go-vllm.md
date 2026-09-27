@@ -1,5 +1,8 @@
 # Banc GO/NO-GO de la bascule vers vLLM — `rag-agent-chat`
 
+> **Archive de mesures : rapport d'audit daté.** Il décrit le dépôt à la date de son titre, avec les mesures faites ce jour-là, et ne se met pas à jour. Lire le verdict et les trouvailles, puis vérifier dans le registre ([axes_amelioration.md](../axes_amelioration.md)) comment chacune a été fermée. Entrée : [l'index des audits](README.md) ou la carte du [README](../../README.md#carte-de-la-documentation).
+
+
 > **Mesuré le 15 septembre 2026**, entre **14:12 UTC** et **14:32 UTC**, relevé
 > par `date -u` avant chaque mesure. Le nom de ce fichier porte le **14** parce
 > que le lot l'a nommé ainsi ; **toutes les mesures qu'il contient datent du
