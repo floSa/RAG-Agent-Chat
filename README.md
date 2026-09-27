@@ -309,7 +309,12 @@ uv venv --python 3.12 && uv pip install torch --index-url https://download.pytor
 . .venv/bin/activate && make lint && make test
 ```
 
-MESURE_DE_LA_PORTE
+Exécutées le 27 septembre 2026 entre 06:50 et 06:54 UTC, sur cette branche, arbre propre, environnement monté par la commande ci-dessus (`rc=0`) ; `rc` du programme `make`, relevés dans des variables :
+
+| | Commande | `rc` | Rendu |
+|---|---|---|---|
+| lint | `make lint` (`rc_lint`) | 0 | `mypy` : 22 fichiers, aucun problème ; `ruff` : tout passe |
+| tests | `make test` (`rc_test`) | 0 | 1316 passés, 0 échec, 0 saut, en 126 s |
 
 Le compte est celui que [tests.md](documentation/tests.md) annonce, et une garde le tient. Ne jamais mesurer la porte dans un `.venv` laissé par un autre travail ; le protocole complet est au §2.2 du [journal](documentation/pilotage_du_chantier.md).
 
